@@ -1,0 +1,52 @@
+#!/bin/sh
+# worktree-cleanup:schedule on [30m|1h|...; default SCHEDULE_EVERY] | off | status
+# A user launchd job (macOS) that runs `lerd worktree-cleanup:run --apply --quiet`,
+# so worktrees go on their own once their PR merges.
+# ponytail: macOS only; a systemd --user timer is the Linux equivalent if needed.
+set -eu
+. "$LERD_PLUGIN_DIR/lib/settings.sh"
+LABEL=sh.lerd.plugin.worktree-cleanup
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOGF="${LERD_PLUGIN_DATA:-$HOME/Library/Logs}/schedule.log"
+[ "$(uname)" = Darwin ] || { echo "schedule is macOS-only for now" >&2; exit 1; }
+
+case "${1:-status}" in
+  on)
+    every=$(to_seconds "${2:-$SCHEDULE_EVERY}")
+    case "$every" in ''|*[!0-9]*) echo "interval must look like 30m, 1h, 1d" >&2; exit 1 ;; esac
+    cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key><array>
+    <string>$LERD_BIN</string><string>worktree-cleanup:run</string><string>--apply</string><string>--quiet</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key><integer>$every</integer>
+  <key>RunAtLoad</key><false/>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+  <key>StandardOutPath</key><string>$LOGF</string>
+  <key>StandardErrorPath</key><string>$LOGF</string>
+</dict></plist>
+EOF
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$PLIST"
+    echo "on: every ${every}s, log $LOGF"
+    ;;
+  off)
+    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
+    rm -f "$PLIST"; echo "off"
+    ;;
+  status)
+    if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+      echo "on: every $(plutil -extract StartInterval raw "$PLIST")s"
+    else echo "off"; fi
+    [ -f "${LERD_PLUGIN_DATA:-/nonexistent}/cleanup.log" ] && { echo "recent removals:"; tail -5 "$LERD_PLUGIN_DATA/cleanup.log"; }
+    exit 0
+    ;;
+  *) echo "usage: worktree-cleanup:schedule on [seconds] | off | status" >&2; exit 1 ;;
+esac

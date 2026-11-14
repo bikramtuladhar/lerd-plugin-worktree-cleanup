@@ -1,0 +1,45 @@
+#!/bin/sh
+# Backend for the dashboard page: /api/plugins/worktree-cleanup/api?action=...
+#   GET  settings   every setting with its value, default, type and description
+#   POST settings   {"KEY": "value", ...}  (validated by bin/config)
+#   POST reset      {"keys": [..]} or {} for all
+#   GET  schedule   {"on": bool, "every": "1h"}
+#   POST schedule   {"on": bool}
+#   GET  check      required tools, as text
+#   GET  preview    dry run, as text
+#   POST run        remove now, as text
+set -eu
+D="$LERD_PLUGIN_DIR"
+. "$D/lib/settings.sh"
+action=$(printf '%s' "${LERD_QUERY:-}" | tr '&' '\n' | sed -n 's/^action=//p' | head -1)
+body=$( [ "${LERD_METHOD:-GET}" = POST ] && cat || echo '{}')
+LABEL=sh.lerd.plugin.worktree-cleanup
+sched_on() { launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; }
+
+case "${LERD_METHOD:-GET} $action" in
+  "GET settings")
+    printf '%s\n' "$SETTINGS_SPEC" | while IFS='|' read -r k def type desc; do
+      eval "v=\${$k}"
+      jq -cn --arg k "$k" --arg v "$v" --arg d "$def" --arg t "$type" --arg s "$desc" \
+        '{key:$k, value:$v, default:$d, type:$t, description:$s}'
+    done | jq -s . ;;
+  "POST settings")
+    args=$(printf '%s' "$body" | jq -r 'to_entries[] | "\(.key)=\(.value)"')
+    [ -n "$args" ] || { echo "nothing to change" >&2; exit 1; }
+    # ponytail: values never hold spaces except list settings, passed one by one.
+    printf '%s\n' "$args" | while IFS= read -r kv; do "$D/bin/config" "$kv" >&2 || exit 1; done
+    echo '{"ok":true}' ;;
+  "POST reset")
+    keys=$(printf '%s' "$body" | jq -r '(.keys // [])[]')
+    # shellcheck disable=SC2086
+    "$D/bin/config" reset $keys >&2; echo '{"ok":true}' ;;
+  "GET schedule")
+    jq -cn --argjson on "$(sched_on && echo true || echo false)" --arg e "$SCHEDULE_EVERY" '{on:$on, every:$e}' ;;
+  "POST schedule")
+    if [ "$(printf '%s' "$body" | jq -r '.on')" = true ]; then "$D/bin/schedule" on >&2; else "$D/bin/schedule" off >&2; fi
+    echo '{"ok":true}' ;;
+  "GET check")   "$D/bin/config" check 2>&1 || true ;;
+  "GET preview") "$D/bin/cleanup" 2>&1 ;;
+  "POST run")    "$D/bin/cleanup" --apply 2>&1 ;;
+  *) echo "unknown action: ${LERD_METHOD:-GET} $action" >&2; exit 1 ;;
+esac

@@ -1,0 +1,148 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Worktree cleanup</title>
+  <style>
+    body { padding: 16px; max-width: 860px; }
+    .lerd-row { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 10px 14px; }
+    .lerd-row .txt { flex: 1; min-width: 0; }
+    .lerd-row .txt b { display: block; font-weight: 500; }
+    .lerd-row input[type=text] { width: 220px; }
+    .lerd-row select { width: 120px; }
+    pre { white-space: pre-wrap; margin: 0; padding: 12px 14px; max-height: 420px; overflow: auto; }
+    #status { min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <section class="lerd-section">
+    <span class="lerd-label">Worktree cleanup</span>
+    <p class="lerd-muted">Removes worktrees whose work is finished, with their dev server and own database. Changes save as you make them.</p>
+    <div class="lerd-toolbar">
+      <button id="preview">Preview</button>
+      <button id="run" class="danger">Clean up now</button>
+      <span class="spacer"></span>
+      <span id="status" class="lerd-muted"></span>
+    </div>
+  </section>
+
+  <div id="groups"></div>
+
+  <section class="lerd-section">
+    <span class="lerd-label">Required tools</span>
+    <div class="lerd-card"><pre id="check" class="lerd-mono lerd-muted">checking…</pre></div>
+  </section>
+
+  <section class="lerd-section" id="outbox" hidden>
+    <span class="lerd-label">Result</span>
+    <div class="lerd-card"><pre id="out" class="lerd-mono"></pre></div>
+  </section>
+
+  <script src="lerd.js"></script>
+  <script>
+    const GROUPS = [
+      ['What counts as finished', ['REMOVE_MERGED', 'REMOVE_CLOSED', 'REMOVE_ON_BASE', 'BASE_BRANCHES', 'MIN_AGE_HOURS']],
+      ['Uncommitted changes', ['DIRTY_MERGED', 'DIRTY_CLOSED', 'DIRTY_ON_BASE', 'SAVE_PATCH']],
+      ['Safety', ['SKIP_BUSY', 'REQUIRE_IDLE', 'DROP_DATABASE', 'LEFTOVER_FOLDERS', 'EXCLUDE_SITES']],
+      ['Schedule', ['@schedule', 'SCHEDULE_EVERY', 'NOTIFY']],
+    ];
+    const LABELS = {
+      REMOVE_MERGED: 'PR merged', REMOVE_CLOSED: 'PR closed without merging',
+      REMOVE_ON_BASE: 'Detached or no PR, HEAD already on a base branch', BASE_BRANCHES: 'Base branches',
+      MIN_AGE_HOURS: 'Minimum age (hours)', DIRTY_MERGED: 'Merged PR', DIRTY_CLOSED: 'Closed PR',
+      DIRTY_ON_BASE: 'Detached / on base branch', SAVE_PATCH: 'Save changes as a patch first',
+      SKIP_BUSY: 'Skip worktrees a process is using', REQUIRE_IDLE: 'Skip worktrees lerd saw activity on',
+      DROP_DATABASE: "Drop the worktree's own database", LEFTOVER_FOLDERS: 'Delete leftover folders',
+      EXCLUDE_SITES: 'Never touch these sites', SCHEDULE_EVERY: 'Run every', NOTIFY: 'Notify after a scheduled run',
+    };
+    const $ = (id) => document.getElementById(id);
+    const status = (t) => { $('status').textContent = t; if (t) setTimeout(() => $('status').textContent === t && ($('status').textContent = ''), 2500); };
+    const parse = (b) => typeof b === 'string' ? JSON.parse(b) : b;
+
+    async function save(key, value) {
+      try {
+        await lerd.api('api?action=settings', { method: 'POST', body: { [key]: value } });
+        status('saved');
+      } catch (e) { status(e.message); load(); }
+    }
+
+    function control(s) {
+      let el;
+      if (s.type === 'bool') {
+        el = document.createElement('input'); el.type = 'checkbox'; el.checked = s.value === 'yes';
+        el.onchange = () => save(s.key, el.checked ? 'yes' : 'no');
+      } else if (s.type === 'action') {
+        el = document.createElement('select');
+        for (const v of ['remove', 'keep']) el.add(new Option(v === 'remove' ? 'Remove' : 'Keep', v, false, s.value === v));
+        el.onchange = () => save(s.key, el.value);
+      } else if (s.key === 'SCHEDULE_EVERY') {
+        el = document.createElement('select');
+        const opts = ['15m', '30m', '1h', '3h', '6h', '12h', '1d'];
+        if (!opts.includes(s.value)) opts.push(s.value);
+        for (const v of opts) el.add(new Option(v, v, false, s.value === v));
+        el.onchange = () => save(s.key, el.value);
+      } else {
+        el = document.createElement('input'); el.type = 'text'; el.value = s.value;
+        el.placeholder = s.type === 'list' ? 'space separated' : '';
+        el.onchange = () => save(s.key, el.value.trim());
+      }
+      return el;
+    }
+
+    function row(title, desc, el) {
+      const r = document.createElement('div'); r.className = 'lerd-row';
+      const t = document.createElement('div'); t.className = 'txt';
+      t.innerHTML = '<b></b><span class="lerd-muted"></span>';
+      t.querySelector('b').textContent = title; t.querySelector('span').textContent = desc;
+      r.append(t, el); return r;
+    }
+
+    async function load() {
+      const [settings, sched] = await Promise.all([
+        lerd.api('api?action=settings').then(parse),
+        lerd.api('api?action=schedule').then(parse),
+      ]);
+      const byKey = Object.fromEntries(settings.map((s) => [s.key, s]));
+      const root = $('groups'); root.textContent = '';
+      for (const [name, keys] of GROUPS) {
+        const sec = document.createElement('section'); sec.className = 'lerd-section';
+        sec.innerHTML = '<span class="lerd-label"></span><div class="lerd-card flush"></div>';
+        sec.querySelector('.lerd-label').textContent = name;
+        const card = sec.querySelector('.lerd-card');
+        for (const k of keys) {
+          if (k === '@schedule') {
+            const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = sched.on;
+            cb.onchange = async () => {
+              try { await lerd.api('api?action=schedule', { method: 'POST', body: { on: cb.checked } }); status(cb.checked ? 'schedule on' : 'schedule off'); }
+              catch (e) { status(e.message); cb.checked = !cb.checked; }
+            };
+            card.append(row('Run automatically', 'A launchd job runs the cleanup on its own, so worktrees go once their PR merges.', cb));
+            continue;
+          }
+          const s = byKey[k]; if (!s) continue;
+          const desc = s.description + (s.value !== s.default ? `  (default: ${s.default || 'none'})` : '');
+          card.append(row(LABELS[k] || k, desc, control(s)));
+        }
+        root.append(sec);
+      }
+    }
+
+    async function show(action, method, label) {
+      $('outbox').hidden = false; $('out').textContent = label + '…';
+      try { $('out').textContent = await lerd.api('api?action=' + action, { method }); }
+      catch (e) { $('out').textContent = e.message; }
+    }
+
+    $('preview').onclick = () => show('preview', 'GET', 'Checking every worktree');
+    $('run').onclick = () => {
+      const d = document.createElement('dialog');
+      d.innerHTML = '<p>Remove every finished worktree now, using the settings above?</p><div class="lerd-toolbar"><span class="spacer"></span><button value="no">Cancel</button><button value="yes" class="danger">Clean up</button></div>';
+      d.querySelectorAll('button').forEach((b) => b.onclick = () => { d.close(); d.remove(); if (b.value === 'yes') show('run', 'POST', 'Cleaning up'); });
+      document.body.append(d); d.showModal();
+    };
+
+    load().catch((e) => { $('groups').textContent = e.message; });
+    lerd.api('api?action=check').then((t) => $('check').textContent = t).catch((e) => $('check').textContent = e.message);
+  </script>
+</body>
+</html>

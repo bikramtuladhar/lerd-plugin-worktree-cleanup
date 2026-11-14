@@ -1,0 +1,73 @@
+#!/bin/sh
+# worktree-cleanup:config                 show every setting
+#   worktree-cleanup:config KEY=VALUE ...  change settings
+#   worktree-cleanup:config reset [KEY..]  back to defaults
+#   worktree-cleanup:config check          required tools and access
+set -eu
+. "$LERD_PLUGIN_DIR/lib/settings.sh"
+mkdir -p "$(dirname "$CONFIG_FILE")"; touch "$CONFIG_FILE"
+
+spec() { printf '%s\n' "$SETTINGS_SPEC" | awk -F'|' -v k="$1" '$1==k'; }
+
+valid() { # key value -> error text, or nothing
+  t=$(spec "$1" | cut -d'|' -f3)
+  case "$t" in
+    "") echo "unknown setting $1 (run config to list them)" ;;
+    bool) case "$2" in yes|no) ;; *) echo "$1 takes yes or no" ;; esac ;;
+    action) case "$2" in remove|keep) ;; *) echo "$1 takes remove or keep" ;; esac ;;
+    int) case "$2" in ''|*[!0-9]*) echo "$1 takes a whole number" ;; esac ;;
+    duration) printf '%s' "$2" | grep -qE '^[0-9]+[smhd]?$' || echo "$1 takes a duration like 30m, 1h, 1d" ;;
+    # config.env is sourced as shell, so a list holds only plain names.
+    list) printf '%s' "$2" | grep -qE '^[A-Za-z0-9 ._/-]*$' || echo "$1 takes names made of letters, digits, spaces and . _ - /" ;;
+  esac
+}
+
+set_key() { # key value: rewrite config.env without the key, then append it
+  grep -v "^$1=" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" || true
+  printf "%s='%s'\n" "$1" "$2" >> "$CONFIG_FILE.tmp"; mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
+}
+
+reapply_schedule() {
+  launchctl print "gui/$(id -u)/sh.lerd.plugin.worktree-cleanup" >/dev/null 2>&1 &&
+    "$LERD_PLUGIN_DIR/bin/schedule" on >/dev/null && echo "schedule re-applied"
+}
+
+case "${1:-show}" in
+  show)
+    printf '%s\n' "$SETTINGS_SPEC" | while IFS='|' read -r k def _ desc; do
+      eval "v=\${$k}"
+      mark=" "; [ "$v" != "$def" ] && mark="*"
+      printf '%s %-17s %-28s %s\n' "$mark" "$k" "${v:-(none)}" "$desc"
+    done
+    echo; echo "* = changed from the default. Settings file: $CONFIG_FILE"
+    ;;
+  reset)
+    shift
+    if [ $# -eq 0 ]; then : > "$CONFIG_FILE"; echo "all settings reset"
+    else for k in "$@"; do grep -v "^$k=" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" || true; mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"; echo "$k reset"; done; fi
+    reapply_schedule || true
+    ;;
+  check)
+    ok=1
+    for c in git jq curl lsof gh; do
+      if p=$(command -v "$c"); then printf '  ok   %-5s %s\n' "$c" "$p"
+      else printf '  MISSING %s%s\n' "$c" "$( [ "$c" = gh ] && echo '  -> brew install gh' )"; ok=0; fi
+    done
+    if command -v gh >/dev/null; then
+      if gh auth status >/dev/null 2>&1; then echo "  ok   gh is logged in"
+      else echo "  FAIL gh is not logged in  -> gh auth login"; ok=0; fi
+    fi
+    if curl -fsS -o /dev/null -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" "$LERD_API_URL/api/sites"; then echo "  ok   lerd API reachable"
+    else echo "  FAIL lerd API unreachable"; ok=0; fi
+    [ $ok = 1 ] && echo "all good" || exit 1
+    ;;
+  *=*)
+    for kv in "$@"; do
+      k=${kv%%=*} v=${kv#*=}
+      err=$(valid "$k" "$v"); [ -z "$err" ] || { echo "$err" >&2; exit 1; }
+    done
+    for kv in "$@"; do set_key "${kv%%=*}" "${kv#*=}"; echo "${kv%%=*} = ${kv#*=}"; done
+    case " $* " in *SCHEDULE_EVERY=*) reapply_schedule || true ;; esac
+    ;;
+  *) echo "usage: config | config KEY=VALUE ... | config reset [KEY...] | config check" >&2; exit 1 ;;
+esac

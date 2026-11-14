@@ -1,0 +1,3 @@
+#!/bin/sh
+# Site command: clean up only the selected site's merged worktrees.
+exec "$(dirname "$0")/cleanup" --apply "$LERD_SITE"

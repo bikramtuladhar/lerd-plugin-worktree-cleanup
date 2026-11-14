@@ -1,0 +1,59 @@
+api_version: 1
+name: worktree-cleanup
+lerd: ">=1.38"
+version: 0.3.0
+description: Remove finished worktrees (with their database and dev server) by hand or on a schedule, with rules you choose
+docs: DOCS.md
+icon: ui/icon.svg
+platforms: [macos]
+notifications: true
+
+commands:
+  - name: run
+    usage: "Remove finished worktrees. Dry run unless --apply. [--apply] [--quiet] [site...]"
+    run: bin/cleanup
+  - name: config
+    usage: "Show or change the rules: config | config KEY=VALUE ... | config reset [KEY...] | config check"
+    run: bin/config
+  - name: schedule
+    usage: "Run the cleanup automatically: on [30m|1h|...] | off | status"
+    run: bin/schedule
+
+site_commands:
+  - name: cleanup
+    label: Clean up finished worktrees
+    description: Remove this site's finished worktrees, with their database and dev server
+    confirm: true
+    run: bin/cleanup-site
+    timeout: 10m
+
+mcp:
+  skill: SKILL.md
+  tools:
+    - name: run
+      description: >-
+        List (dry run) or remove lerd worktrees whose work is finished, following the user's rules
+        (lerd worktree-cleanup:config): PR merged or closed, or a detached/no-PR HEAD already on a
+        base branch. Guards skip worktrees in use or recently active. Drops an isolated database
+        and the dev server with it. Dry-run first and show the user the list before apply=true.
+      input_schema:
+        type: object
+        properties:
+          apply: {type: boolean, description: "Actually remove. Default false (dry run)."}
+          sites: {type: array, items: {type: string}, description: "Limit to these site names."}
+      run: bin/cleanup
+      timeout: 10m
+
+api:
+  - path: api
+    methods: [GET, POST]
+    run: bin/api
+    loopback_only: true
+    timeout: 10m
+
+ui:
+  page: {title: Worktree cleanup, icon: ui/icon.svg, entry: ui/index.html}
+
+# gh is checked at run time instead: lerd's dashboard runs with a PATH that
+# lacks Homebrew, so listing it here would refuse the plugin there.
+requires: [curl, jq, git, lsof]
