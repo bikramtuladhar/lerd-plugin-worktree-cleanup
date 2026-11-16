@@ -8,12 +8,20 @@
 # ponytail: PR lookup = one gh call per repo + one per branchless HEAD; fine for
 # tens of worktrees, batch via GraphQL if it ever gets slow.
 set -u
-set -f   # no globbing of site names; re-enabled only for the leftover-folder scan
+set -f   # no globbing of site names
 . "$LERD_PLUGIN_DIR/lib/settings.sh"
 command -v gh >/dev/null || { echo "worktree-cleanup needs the GitHub CLI: brew install gh && gh auth login" >&2; exit 1; }
 
 APPLY=0 QUIET=0 SITES=""
-if [ "${LERD_SURFACE:-cli}" = mcp ]; then
+if [ "${LERD_SURFACE:-cli}" = schedule ]; then
+  # lerd runs this every 15m; SCHEDULE_EVERY decides which of those runs act.
+  # A minute of slack, since lerd checks once a minute.
+  STAMP="$LERD_PLUGIN_DATA/last-scheduled-run"
+  last=$(cat "$STAMP" 2>/dev/null || echo 0); now=$(date +%s)
+  [ $(( now - last )) -ge $(( $(to_seconds "$SCHEDULE_EVERY") - 60 )) ] || exit 0
+  echo "$now" > "$STAMP"   # ponytail: stamped before the run, so a failed run waits a full interval too
+  APPLY=1 QUIET=1
+elif [ "${LERD_SURFACE:-cli}" = mcp ]; then
   IN=$(cat)
   [ "$(printf '%s' "$IN" | jq -r '.apply // false')" = true ] && APPLY=1
   SITES=$(printf '%s' "$IN" | jq -r '(.sites // [])[]')
@@ -28,14 +36,13 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 REMOVED="$TMP/removed"; : > "$REMOVED"
 say() { [ $QUIET = 1 ] || echo "$@"; }
 first_line() { printf '%s' "$1" | grep -v '^ *→' | grep -m1 . | sed 's/^ *✗ *//'; }
-envdb() { sed -n 's/^DB_DATABASE=//p' "$1/.env" 2>/dev/null | tr -d '"' | head -1; }
 api() { curl -fsS -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" "$LERD_API_URL$1"; }
 logrm() { say "  removed $1"; echo "$2" >> "$REMOVED"; echo "$(date '+%F %T') removed $2 $3" >> "$LOG"; }
 
 # Every process cwd, once, minus lerd's own dev servers: a process descended
 # from something lerd launched (a command under lerd's bin or run folders).
 # Removing the worktree stops those too.
-ps -axo pid=,ppid=,command= > "$TMP/ps"
+ps -eo pid=,ppid=,args= > "$TMP/ps"
 lsof -a -d cwd -F pn 2>/dev/null |
   awk -v psf="$TMP/ps" -v lerd="$HOME/.local/share/lerd/" '
     BEGIN { while ((getline l < psf) > 0) { split(l, f, " "); pp[f[1]] = f[2]; c = l; sub(/^ *[0-9]+ +[0-9]+ +/, "", c); cmd[f[1]] = c } }
@@ -56,11 +63,13 @@ for site in $(jq -r '.[] | select((.worktrees // []) | length > 0) | .name' "$TM
   bases=$(for b in $BASE_BRANCHES; do
     git -C "$spath" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null && echo "origin/$b"; done)
   prs='[]'; [ -n "$remote" ] && prs=$(gh -R "$remote" pr list --state all --limit 1000 --json headRefName,state,number 2>/dev/null || echo '[]')
-  pdb=$(envdb "$spath")
+  pdb=$(jq -r '.db_database // ""' "$TMP/site.json")
   say "== $site"
 
-  jq -r '.worktrees[] | [.path, (.git_branch // ""), (.idle|tostring)] | @tsv' "$TMP/site.json" > "$TMP/wts"
-  while IFS="$(printf '\t')" read -r wpath gbr idle; do
+  # \037 separator: unlike a tab, read keeps empty fields (no branch, no db).
+  US=$(printf '\037')
+  jq -r '.worktrees[] | [.path, (.git_branch // ""), (.idle|tostring), (.db_isolated // false|tostring), (.db_database // "")] | join("\u001f")' "$TMP/site.json" > "$TMP/wts"
+  while IFS="$US" read -r wpath gbr idle isolated wdb; do
     name=$(basename "$wpath")
     [ -d "$wpath" ] || { say "  skip   $name (folder missing)"; continue; }
 
@@ -75,8 +84,7 @@ for site in $(jq -r '.[] | select((.worktrees // []) | length > 0) | .name' "$TM
       if is_yes "$REMOVE_ON_BASE"; then
         # A fresh worktree with no commits yet is "on main" too: require age.
         hf=$(git -C "$wpath" rev-parse --git-path HEAD 2>/dev/null); case "$hf" in /*) ;; *) hf="$wpath/$hf" ;; esac
-        age_h=$(( ( $(date +%s) - $(stat -f %m "$hf" 2>/dev/null || date +%s) ) / 3600 ))
-        if [ "$age_h" -ge "$MIN_AGE_HOURS" ]; then
+        if [ -n "$(find "$hf" -mmin +$(( MIN_AGE_HOURS * 60 )) 2>/dev/null)" ]; then
           for b in $bases; do
             git -C "$wpath" merge-base --is-ancestor "$head" "$b" 2>/dev/null && { why="HEAD on $b"; kind=base; break; }
           done
@@ -106,8 +114,12 @@ for site in $(jq -r '.[] | select((.worktrees // []) | length > 0) | .name' "$TM
     fi
 
     # 3. Remove.
-    wdb=$(envdb "$wpath"); dropdb="" note=""
-    if [ -n "$wdb" ] && [ "$wdb" != "$pdb" ] && is_yes "$DROP_DATABASE"; then dropdb=1 note=" + drop db $wdb"; fi
+    dropdb="" note=""
+    # db:share drops only the database lerd made for the worktree, so a flag
+    # left on a worktree using the parent's database just gets cleared.
+    if [ "$isolated" = true ] && is_yes "$DROP_DATABASE"; then
+      dropdb=1; [ -n "$wdb" ] && [ "$wdb" != "$pdb" ] && note=" + drop db $wdb" || note=" + clear db isolation"
+    fi
     [ -n "$force" ] && { is_yes "$SAVE_PATCH" && note="$note, uncommitted changes saved as patch" || note="$note, uncommitted changes discarded"; }
     if [ $APPLY = 0 ]; then say "  remove $name ($why)$note"; continue; fi
     if [ -n "$force" ] && is_yes "$SAVE_PATCH"; then
@@ -130,27 +142,12 @@ for site in $(jq -r '.[] | select((.worktrees // []) | length > 0) | .name' "$TM
       say "  FAILED $name: $(first_line "$err")"
     fi
   done < "$TMP/wts"
-
-  # 4. Leftover folders: not a git worktree, no .git, only deps/env copies inside.
-  is_yes "$LEFTOVER_FOLDERS" || continue
-  wdir="$spath/.claude/worktrees"; [ -d "$wdir" ] || continue
-  git -C "$spath" worktree list --porcelain | sed -n 's/^worktree //p' > "$TMP/reg"
-  set +f; dirs=$(printf '%s\n' "$wdir"/*/); set -f
-  printf '%s\n' "$dirs" | while IFS= read -r d; do
-    d=${d%/}; [ -d "$d" ] || continue
-    grep -qx "$d" "$TMP/reg" && continue
-    [ -e "$d/.git" ] && continue
-    [ -z "$(ls -A "$d" | grep -vxE 'node_modules|vendor|\.env|\.nuxt|\.output')" ] || continue
-    busy "$d" && continue
-    if [ $APPLY = 1 ]; then rm -rf "$d"; logrm "leftover folder $(basename "$d")" "$site/$(basename "$d") (leftover)" ""
-    else say "  remove leftover folder $(basename "$d")"; fi
-  done
 done
 
 n=$(wc -l < "$REMOVED" | tr -d ' ')
 if [ $APPLY = 1 ]; then
   say "removed $n"
-  if [ "$n" -gt 0 ] && is_yes "$NOTIFY" && [ "${LERD_SURFACE:-cli}" != mcp ]; then
+  if [ "$n" -gt 0 ] && is_yes "$NOTIFY" && [ "${LERD_SURFACE:-cli}" = schedule ]; then
     body=$(head -5 "$REMOVED" | tr '\n' ' '); [ "$n" -gt 5 ] && body="${body}…"
     jq -n --arg t "Removed $n finished worktree(s)" --arg b "$body" '{title:$t, body:($b|.[0:300]), tag:"worktree-cleanup"}' |
       curl -fsS -X POST -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" -H 'Content-Type: application/json' \

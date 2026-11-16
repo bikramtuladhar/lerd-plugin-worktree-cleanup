@@ -15,10 +15,9 @@ SAVE_PATCH|yes|bool|Before removing a worktree with uncommitted changes, save th
 SKIP_BUSY|yes|bool|Keep a worktree a process (shell, editor, AI session) is sitting in; lerd dev servers do not count
 REQUIRE_IDLE|yes|bool|Keep a worktree lerd saw activity on within its idle timeout
 DROP_DATABASE|yes|bool|Drop a worktree'"'"'s own database (lerd db:share) when removing it; no keeps the database
-LEFTOVER_FOLDERS|yes|bool|Delete .claude/worktrees folders git no longer tracks that hold only node_modules, vendor or .env
 EXCLUDE_SITES||list|Site names never touched (space separated)
 NOTIFY|yes|bool|Send a dashboard notification after a scheduled run removes something
-SCHEDULE_EVERY|1h|duration|How often the schedule runs (e.g. 30m, 1h, 6h, 1d); applied by schedule on'
+SCHEDULE_EVERY|1h|duration|How often the scheduled cleanup acts, 15m or longer (e.g. 30m, 1h, 6h, 1d)'
 
 CONFIG_FILE="${LERD_PLUGIN_DATA:-$HOME/.local/share/lerd/plugin-data/worktree-cleanup}/config.env"
 
@@ -37,5 +36,5 @@ to_seconds() {
   esac
 }
 
-# The dashboard and launchd run plugins with a bare PATH; gh lives in Homebrew.
+# The dashboard runs plugins with a bare PATH; gh lives in Homebrew.
 PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"

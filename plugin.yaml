@@ -1,11 +1,11 @@
 api_version: 1
 name: worktree-cleanup
-lerd: ">=1.38"
-version: 0.3.0
+lerd: ">=1.39"
+version: 0.4.0
 description: Remove finished worktrees (with their database and dev server) by hand or on a schedule, with rules you choose
 docs: DOCS.md
 icon: ui/icon.svg
-platforms: [macos]
+screenshots: [docs/page.png]
 notifications: true
 
 commands:
@@ -15,9 +15,6 @@ commands:
   - name: config
     usage: "Show or change the rules: config | config KEY=VALUE ... | config reset [KEY...] | config check"
     run: bin/config
-  - name: schedule
-    usage: "Run the cleanup automatically: on [30m|1h|...] | off | status"
-    run: bin/schedule
 
 site_commands:
   - name: cleanup
@@ -43,6 +40,11 @@ mcp:
           sites: {type: array, items: {type: string}, description: "Limit to these site names."}
       run: bin/cleanup
       timeout: 10m
+
+# Off until the user allows it (asked at install, or the Schedule switch on the
+# plugin's card). Runs every 15m; bin/cleanup skips runs until SCHEDULE_EVERY passed.
+schedules:
+  - {name: cleanup, every: 15m, run: bin/cleanup, timeout: 10m}
 
 api:
   - path: api

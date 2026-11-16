@@ -16,7 +16,8 @@ valid() { # key value -> error text, or nothing
     bool) case "$2" in yes|no) ;; *) echo "$1 takes yes or no" ;; esac ;;
     action) case "$2" in remove|keep) ;; *) echo "$1 takes remove or keep" ;; esac ;;
     int) case "$2" in ''|*[!0-9]*) echo "$1 takes a whole number" ;; esac ;;
-    duration) printf '%s' "$2" | grep -qE '^[0-9]+[smhd]?$' || echo "$1 takes a duration like 30m, 1h, 1d" ;;
+    duration) { printf '%s' "$2" | grep -qE '^[0-9]+[smhd]?$' && [ "$(to_seconds "$2")" -ge 900 ]; } ||
+      echo "$1 takes a duration of 15m or more, like 30m, 1h, 1d" ;;
     # config.env is sourced as shell, so a list holds only plain names.
     list) printf '%s' "$2" | grep -qE '^[A-Za-z0-9 ._/-]*$' || echo "$1 takes names made of letters, digits, spaces and . _ - /" ;;
   esac
@@ -25,11 +26,6 @@ valid() { # key value -> error text, or nothing
 set_key() { # key value: rewrite config.env without the key, then append it
   grep -v "^$1=" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" || true
   printf "%s='%s'\n" "$1" "$2" >> "$CONFIG_FILE.tmp"; mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
-}
-
-reapply_schedule() {
-  launchctl print "gui/$(id -u)/sh.lerd.plugin.worktree-cleanup" >/dev/null 2>&1 &&
-    "$LERD_PLUGIN_DIR/bin/schedule" on >/dev/null && echo "schedule re-applied"
 }
 
 case "${1:-show}" in
@@ -45,7 +41,6 @@ case "${1:-show}" in
     shift
     if [ $# -eq 0 ]; then : > "$CONFIG_FILE"; echo "all settings reset"
     else for k in "$@"; do grep -v "^$k=" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" || true; mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"; echo "$k reset"; done; fi
-    reapply_schedule || true
     ;;
   check)
     ok=1
@@ -67,7 +62,6 @@ case "${1:-show}" in
       err=$(valid "$k" "$v"); [ -z "$err" ] || { echo "$err" >&2; exit 1; }
     done
     for kv in "$@"; do set_key "${kv%%=*}" "${kv#*=}"; echo "${kv%%=*} = ${kv#*=}"; done
-    case " $* " in *SCHEDULE_EVERY=*) reapply_schedule || true ;; esac
     ;;
   *) echo "usage: config | config KEY=VALUE ... | config reset [KEY...] | config check" >&2; exit 1 ;;
 esac

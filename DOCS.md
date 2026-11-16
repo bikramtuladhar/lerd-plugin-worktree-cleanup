@@ -20,7 +20,7 @@ lerd worktree-cleanup:config                  # show every setting
 lerd worktree-cleanup:config DIRTY_CLOSED=keep MIN_AGE_HOURS=48
 lerd worktree-cleanup:config reset [KEY...]
 lerd worktree-cleanup:config check            # required tools and access
-lerd worktree-cleanup:schedule on|off|status
+lerd plugin schedule worktree-cleanup on|off   # run it automatically
 ```
 
 - **AI assistants:** the `worktree-cleanup_run` tool (dry run first, then apply).
@@ -55,22 +55,23 @@ plugin's data folder and kept across updates.
 |---|---|---|
 | `SKIP_BUSY` | yes | Keep a worktree a process (shell, editor, AI session) has as its working folder. lerd's own dev server doesn't count |
 | `REQUIRE_IDLE` | yes | Keep a worktree lerd saw requests on within its idle timeout |
-| `DROP_DATABASE` | yes | If the worktree's `.env` `DB_DATABASE` differs from the parent's, drop it with `lerd db:share` first. When lerd refuses (a database it doesn't manage), the worktree is kept and the reason shown |
-| `LEFTOVER_FOLDERS` | yes | Delete folders in `.claude/worktrees/` that git no longer tracks and that hold only `node_modules`, `vendor`, `.nuxt`, `.output` or `.env` |
+| `DROP_DATABASE` | yes | If lerd reports the worktree has its own database, drop it with `lerd db:share` first. When lerd refuses, the worktree is kept and the reason shown |
 | `EXCLUDE_SITES` | (none) | Site names never touched, space separated |
 
 ### Schedule
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `SCHEDULE_EVERY` | 1h | How often the scheduled cleanup runs: `30m`, `1h`, `6h`, `1d`… |
+| `SCHEDULE_EVERY` | 1h | How often the scheduled cleanup acts, 15m or longer: `30m`, `1h`, `6h`, `1d`… |
 | `NOTIFY` | yes | Dashboard notification after a scheduled run removes something |
 
 lerd has no "PR merged" event, so "automatically after a merge" means a
-regular check. `schedule on` installs a user launchd job
-(`sh.lerd.plugin.worktree-cleanup`) that runs `run --apply --quiet`; changing
-`SCHEDULE_EVERY` re-applies it. Every removal is logged to `cleanup.log` in the
-plugin's data folder.
+regular check. lerd runs the plugin's `cleanup` schedule every 15 minutes once
+you allow it (asked at install, the Schedule switch on the plugin's card, or
+`lerd plugin schedule worktree-cleanup on`); the plugin skips runs until
+`SCHEDULE_EVERY` has passed, then removes with `--apply`. Every removal is
+logged to `cleanup.log` in the plugin's data folder, and
+`lerd plugin schedule worktree-cleanup` shows the last run.
 
 ## Required tools
 
@@ -86,5 +87,3 @@ plugin's data folder.
 access to lerd's API. `gh` is checked when the plugin runs rather than at load,
 because lerd's dashboard runs with a PATH that doesn't include Homebrew; the
 scripts add `/opt/homebrew/bin` and `/usr/local/bin` themselves.
-
-macOS only for now (the schedule uses launchd).

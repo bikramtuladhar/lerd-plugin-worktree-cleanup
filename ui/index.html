@@ -43,7 +43,7 @@
     const GROUPS = [
       ['What counts as finished', ['REMOVE_MERGED', 'REMOVE_CLOSED', 'REMOVE_ON_BASE', 'BASE_BRANCHES', 'MIN_AGE_HOURS']],
       ['Uncommitted changes', ['DIRTY_MERGED', 'DIRTY_CLOSED', 'DIRTY_ON_BASE', 'SAVE_PATCH']],
-      ['Safety', ['SKIP_BUSY', 'REQUIRE_IDLE', 'DROP_DATABASE', 'LEFTOVER_FOLDERS', 'EXCLUDE_SITES']],
+      ['Safety', ['SKIP_BUSY', 'REQUIRE_IDLE', 'DROP_DATABASE', 'EXCLUDE_SITES']],
       ['Schedule', ['@schedule', 'SCHEDULE_EVERY', 'NOTIFY']],
     ];
     const LABELS = {
@@ -52,7 +52,7 @@
       MIN_AGE_HOURS: 'Minimum age (hours)', DIRTY_MERGED: 'Merged PR', DIRTY_CLOSED: 'Closed PR',
       DIRTY_ON_BASE: 'Detached / on base branch', SAVE_PATCH: 'Save changes as a patch first',
       SKIP_BUSY: 'Skip worktrees a process is using', REQUIRE_IDLE: 'Skip worktrees lerd saw activity on',
-      DROP_DATABASE: "Drop the worktree's own database", LEFTOVER_FOLDERS: 'Delete leftover folders',
+      DROP_DATABASE: "Drop the worktree's own database",
       EXCLUDE_SITES: 'Never touch these sites', SCHEDULE_EVERY: 'Run every', NOTIFY: 'Notify after a scheduled run',
     };
     const $ = (id) => document.getElementById(id);
@@ -98,10 +98,7 @@
     }
 
     async function load() {
-      const [settings, sched] = await Promise.all([
-        lerd.api('api?action=settings').then(parse),
-        lerd.api('api?action=schedule').then(parse),
-      ]);
+      const settings = await lerd.api('api?action=settings').then(parse);
       const byKey = Object.fromEntries(settings.map((s) => [s.key, s]));
       const root = $('groups'); root.textContent = '';
       for (const [name, keys] of GROUPS) {
@@ -111,12 +108,8 @@
         const card = sec.querySelector('.lerd-card');
         for (const k of keys) {
           if (k === '@schedule') {
-            const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = sched.on;
-            cb.onchange = async () => {
-              try { await lerd.api('api?action=schedule', { method: 'POST', body: { on: cb.checked } }); status(cb.checked ? 'schedule on' : 'schedule off'); }
-              catch (e) { status(e.message); cb.checked = !cb.checked; }
-            };
-            card.append(row('Run automatically', 'A launchd job runs the cleanup on its own, so worktrees go once their PR merges.', cb));
+            // lerd owns the switch: a plugin's token cannot allow its own schedule.
+            card.append(row('Run automatically', 'Turn on with the Schedule switch on this plugin\'s card in System > Plugins, or lerd plugin schedule worktree-cleanup on.', document.createElement('span')));
             continue;
           }
           const s = byKey[k]; if (!s) continue;
