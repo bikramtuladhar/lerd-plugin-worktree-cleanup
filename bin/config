@@ -11,6 +11,10 @@ spec() { printf '%s\n' "$SETTINGS_SPEC" | awk -F'|' -v k="$1" '$1==k'; }
 
 valid() { # key value -> error text, or nothing
   t=$(spec "$1" | cut -d'|' -f3)
+  # config.env is sourced as shell: no value may hold a newline or a quote.
+  # (grep below checks one line at a time, so this check has to come first.)
+  case "$2" in *"
+"*|*"'"*|*'"'*|*'\'*) echo "$1 cannot hold quotes, backslashes or line breaks"; return ;; esac
   case "$t" in
     "") echo "unknown setting $1 (run config to list them)" ;;
     bool) case "$2" in yes|no) ;; *) echo "$1 takes yes or no" ;; esac ;;
@@ -43,18 +47,38 @@ case "${1:-show}" in
     else for k in "$@"; do grep -v "^$k=" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" || true; mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"; echo "$k reset"; done; fi
     ;;
   check)
-    ok=1
-    for c in git jq curl lsof gh; do
-      if p=$(command -v "$c"); then printf '  ok   %-5s %s\n' "$c" "$p"
-      else printf '  MISSING %s%s\n' "$c" "$( [ "$c" = gh ] && echo '  -> brew install gh' )"; ok=0; fi
-    done
-    if command -v gh >/dev/null; then
-      if gh auth status >/dev/null 2>&1; then echo "  ok   gh is logged in"
-      else echo "  FAIL gh is not logged in  -> gh auth login"; ok=0; fi
+    # One check per line: status<TAB>name<TAB>detail<TAB>fix (status: ok, warn, fail).
+    checks() {
+      for c in git jq curl lsof; do
+        if p=$(command -v "$c"); then printf 'ok\t%s\t%s\t\n' "$c" "$p"
+        else printf 'fail\t%s\tnot found\t%s\n' "$c" "$( [ "$c" = jq ] && echo 'brew install jq' || echo 'xcode-select --install')"; fi
+      done
+      if p=$(command -v gh); then
+        printf 'ok\tgh\t%s\t\n' "$(gh --version | head -1 | awk '{print $3}') at $p"
+        if u=$(gh api user -q .login 2>/dev/null); then
+          printf 'ok\tGitHub login\tsigned in as %s\t\n' "$u"
+          rl=$(gh api rate_limit -q '.resources.graphql | "\(.remaining) \(.limit)"' 2>/dev/null || true)
+          if [ -n "$rl" ]; then
+            set -- $rl; st=ok; [ "$1" -lt 200 ] && st=warn
+            printf '%s\tGitHub API\t%s of %s GraphQL points left this hour\t\n' "$st" "$1" "$2"
+          fi
+        else printf 'fail\tGitHub login\tgh is not signed in\tgh auth login\n'; fi
+      else printf 'fail\tgh\tnot found (needed for PR state)\tbrew install gh\n'; fi
+      if curl -fsS -o /dev/null -H "X-Lerd-Plugin-Token: ${LERD_API_TOKEN:-}" "${LERD_API_URL:-http://127.0.0.1:7073}/api/sites" 2>/dev/null
+      then printf 'ok\tlerd API\treachable\t\n'
+      else printf 'fail\tlerd API\tunreachable\tlerd start\n'; fi
+      if command -v setsid >/dev/null; then printf 'ok\tBackground runs\tsetsid\t\n'
+      elif command -v perl >/dev/null; then printf 'ok\tBackground runs\tperl\t\n'
+      else printf 'fail\tBackground runs\tneither setsid nor perl found; the dashboard cannot start runs\t\n'; fi
+    }
+    if [ "${2:-}" = --json ]; then
+      checks | jq -Rcs 'split("\n") | map(select(. != "") | split("\t") | {status:.[0], name:.[1], detail:.[2], fix:.[3]})'
+      exit 0
     fi
-    if curl -fsS -o /dev/null -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" "$LERD_API_URL/api/sites"; then echo "  ok   lerd API reachable"
-    else echo "  FAIL lerd API unreachable"; ok=0; fi
-    [ $ok = 1 ] && echo "all good" || exit 1
+    out=$(checks)
+    printf '%s\n' "$out" | awk -F'\t' '{ printf "  %-4s %-15s %s%s\n", $1, $2, $3, ($4 != "" ? "  -> " $4 : "") }'
+    bad=$(printf '%s\n' "$out" | grep -c '^fail' || true)
+    [ "$bad" = 0 ] && echo "all good" || exit 1
     ;;
   *=*)
     for kv in "$@"; do

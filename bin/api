@@ -1,16 +1,34 @@
 #!/bin/sh
 # Backend for the dashboard page: /api/plugins/worktree-cleanup/api?action=...
-#   GET  settings   every setting with its value, default, type and description
-#   POST settings   {"KEY": "value", ...}  (validated by bin/config)
-#   POST reset      {"keys": [..]} or {} for all
-#   GET  check      required tools, as text
-#   GET  preview    dry run, as text
-#   POST run        remove now, as text
+#   GET  settings          every setting with its value, default, type and description
+#   POST settings          {"KEY": "value", ...}  (validated by bin/config)
+#   POST reset             {"keys": [..]} or {} for all
+#   GET  check             required tools and access, as [{status, name, detail, fix}]
+#   GET  status            schedule state, storage use, site names
+#   GET  patches           saved patches, newest first
+#   GET  patch&name=       one patch's text
+#   POST patch-delete      {"names": [..]} or {"all": true}
+#   POST start             {"mode": "preview"|"apply"}: starts a run in the background -> {id}
+#   GET  events&id=&from=N the run's events from line N -> {events, next, running}
+#   GET  runs              recent runs, newest first, with their totals
+#   GET  current           the run in progress -> {id} or {id: null}
 set -eu
 D="$LERD_PLUGIN_DIR"
 . "$D/lib/settings.sh"
-action=$(printf '%s' "${LERD_QUERY:-}" | tr '&' '\n' | sed -n 's/^action=//p' | head -1)
+DATA="${LERD_PLUGIN_DATA:?}"; RUNS="$DATA/runs"; mkdir -p "$RUNS"
+q() { printf '%s' "${LERD_QUERY:-}" | tr '&' '\n' | sed -n "s/^$1=//p" | head -1; }
+action=$(q action)
 body=$( [ "${LERD_METHOD:-GET}" = POST ] && cat || echo '{}')
+
+running_id() { # the id of the run holding the lock, if its process is alive
+  pid=$(cat "$DATA/run.lock/pid" 2>/dev/null || true)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && cat "$DATA/run.lock/id" 2>/dev/null || true
+}
+run_file() { # validated id -> path (ids are timestamps: digits and dashes only)
+  case "$1" in ''|*[!0-9-]*) echo "bad run id" >&2; exit 1 ;; esac
+  [ -f "$RUNS/$1.jsonl" ] || { echo "no run $1" >&2; exit 1; }
+  echo "$RUNS/$1.jsonl"
+}
 
 case "${LERD_METHOD:-GET} $action" in
   "GET settings")
@@ -29,8 +47,95 @@ case "${LERD_METHOD:-GET} $action" in
     keys=$(printf '%s' "$body" | jq -r '(.keys // [])[]')
     # shellcheck disable=SC2086
     "$D/bin/config" reset $keys >&2; echo '{"ok":true}' ;;
-  "GET check")   "$D/bin/config" check 2>&1 || true ;;
-  "GET preview") "$D/bin/cleanup" 2>&1 ;;
-  "POST run")    "$D/bin/cleanup" --apply 2>&1 ;;
+  "GET check") "$D/bin/config" check --json ;;
+
+  "GET status")
+    # lerd's own table: Schedule  Every  Last run  Next run  Status, then a hint line.
+    sched=$("$LERD_BIN" plugin schedule "$LERD_PLUGIN_NAME" 2>&1 </dev/null || true)
+    kb() { du -sk "$1" 2>/dev/null | awk '{print $1}' || echo 0; }
+    n() { ls -1 "$1" 2>/dev/null | wc -l | tr -d ' '; }
+    curl -fsS -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" "$LERD_API_URL/api/sites" 2>/dev/null |
+      jq -c '[.[] | {name, worktrees:((.worktrees // []) | length)}]' > "$DATA/.sites.tmp" || echo '[]' > "$DATA/.sites.tmp"
+    jq -cn --arg s "$sched" --arg dir "$DATA" --argjson sites "$(cat "$DATA/.sites.tmp")" \
+      --arg last "$(cat "$DATA/last-scheduled-run" 2>/dev/null || true)" \
+      --argjson rn "$(n "$RUNS")" --argjson rk "$(kb "$RUNS")" \
+      --argjson pn "$(n "$DATA/patches")" --argjson pk "$(kb "$DATA/patches")" --argjson lk "$(kb "$DATA/cleanup.log")" '
+      ($s | split("\n")) as $l |
+      ($l | map(select(test("^cleanup "))) | first // "" | [splits("  +")]) as $row |
+      {schedule: {every: ($row[1] // null), last: ($row[2] // null), next: ($row[3] // null),
+                  status: ($row[4] // "unknown"),
+                  hint: ($l | map(select(test("^ +[A-Z]"))) | first // "" | gsub("^ +"; ""))},
+       last_acted: (if $last == "" then null else ($last | tonumber) end),
+       storage: {runs: $rn, runs_kb: $rk, patches: $pn, patches_kb: $pk, log_kb: $lk},
+       data_dir: $dir, sites: $sites}'
+    rm -f "$DATA/.sites.tmp" ;;
+
+  "GET patches")
+    mkdir -p "$DATA/patches"
+    # name, bytes, modified (epoch); stat flags differ between macOS and Linux.
+    ls -1t "$DATA/patches" | grep '\.patch$' | while read -r f; do
+      st=$(stat -f '%z %m' "$DATA/patches/$f" 2>/dev/null || stat -c '%s %Y' "$DATA/patches/$f")
+      printf '%s %s\n' "$st" "$f"
+    done | jq -Rcs 'split("\n") | map(select(. != "") | capture("^(?<size>[0-9]+) (?<at>[0-9]+) (?<name>.+)$")
+      | .size |= tonumber | .at |= tonumber
+      | . + (.name | capture("^(?<label>.+)-(?<stamp>[0-9]{8}-[0-9]{6})\\.patch$") // {label: .name}))' ;;
+
+  "GET patch")
+    name=$(q name); case "$name" in ''|*/*|.*|*[!A-Za-z0-9._-]*) echo "bad patch name" >&2; exit 1 ;; esac
+    f="$DATA/patches/$name"; [ -f "$f" ] || { echo "no patch $name" >&2; exit 1; }
+    # ponytail: first 2 MB only; a bigger patch is binary noise for a viewer.
+    head -c 2000000 "$f" ;;
+
+  "POST patch-delete")
+    if [ "$(printf '%s' "$body" | jq -r '.all // false')" = true ]; then
+      find "$DATA/patches" -name '*.patch' -type f -exec rm -f {} +
+    else
+      printf '%s' "$body" | jq -r '(.names // [])[]' | while read -r name; do
+        case "$name" in ''|*/*|.*|*[!A-Za-z0-9._-]*) continue ;; esac
+        rm -f "$DATA/patches/$name"
+      done
+    fi
+    echo '{"ok":true}' ;;
+
+  "POST start")
+    cur=$(running_id)
+    [ -n "$cur" ] && { jq -cn --arg id "$cur" '{id:$id, already:true}'; exit 0; }
+    mode=$(printf '%s' "$body" | jq -r '.mode // "preview"')
+    id="$(date +%Y%m%d-%H%M%S)-$$"
+    set -- ; [ "$mode" = apply ] && set -- --apply
+    # Detached in its own session, all output closed, so lerd answers now and
+    # doesn't stop the run when this request ends.
+    if command -v setsid >/dev/null; then detach=setsid; else detach="perl -MPOSIX -e POSIX::setsid();exec(@ARGV)"; fi
+    # shellcheck disable=SC2086
+    RUN_ID=$id LERD_SURFACE=cli $detach "$D/bin/cleanup" --quiet "$@" </dev/null >/dev/null 2>"$DATA/last-run.err" &
+    # Answer once the run's file exists (or it already failed).
+    i=0; while [ ! -f "$RUNS/$id.jsonl" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+    [ -f "$RUNS/$id.jsonl" ] || { cat "$DATA/last-run.err" >&2; echo "the run did not start" >&2; exit 1; }
+    jq -cn --arg id "$id" '{id:$id}' ;;
+
+  "GET events")
+    id=$(q id); f=$(run_file "$id"); from=$(q from); from=${from:-0}
+    case "$from" in *[!0-9]*) from=0 ;; esac
+    # Only whole lines: a line still being written has no newline yet.
+    total=$(wc -l < "$f" | tr -d ' ')
+    r=false; [ "$(running_id)" = "$id" ] && r=true
+    { [ "$total" -gt "$from" ] && tail -n +$((from + 1)) "$f" | head -n $((total - from)); } |
+      jq -cs --argjson next "$total" --argjson r $r '{events:., next:$next, running:$r}' ;;
+
+  "GET runs")
+    ls -1 "$RUNS" | grep '\.jsonl$' | sort -r | head -60 | while read -r f; do
+      jq -cs --arg id "${f%.jsonl}" '
+        (map(select(.e=="start"))[0] // {}) as $s | (map(select(.e=="done"))[0]) as $d |
+        {id:$id, mode:$s.mode, surface:$s.surface, at:$s.at, done:($d != null), seconds:$d.seconds,
+         sites:($s.sites // [] | length),
+         worktrees:(map(select(.e=="wt"))|length),
+         planned:(map(select(.e=="wt" and .verdict=="remove"))|length),
+         removed:(map(select(.e=="removed"))|length),
+         failed:(map(select(.e=="failed"))|length),
+         warnings:(map(select(.e=="warn" or .e=="error"))|length)}' "$RUNS/$f" 2>/dev/null || true
+    done | jq -cs --arg cur "$(running_id)" 'map(.running = (.id == $cur))' ;;
+
+  "GET current") jq -cn --arg id "$(running_id)" '{id:(if $id=="" then null else $id end)}' ;;
+
   *) echo "unknown action: ${LERD_METHOD:-GET} $action" >&2; exit 1 ;;
 esac

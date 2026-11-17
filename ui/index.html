@@ -2,140 +2,731 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Worktree cleanup</title>
   <style>
-    body { padding: 16px; max-width: 860px; }
-    .lerd-row { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 10px 14px; }
-    .lerd-row .txt { flex: 1; min-width: 0; }
+    body { padding: 16px; max-width: 980px; }
+    [hidden] { display: none !important; }
+    .head { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; }
+    .head h1 { margin: 0; }
+    .head p { margin: 2px 0 0; }
+    .lerd-tabs { margin: 16px 0 14px; gap: 22px; }
+    /* Tabs: lerd's underline, at body size in the strong text colour so they read at a glance. */
+    .lerd-tabs [role=tab] { font-size: 13px; color: var(--lerd-text-strong); padding: 0 1px 8px; }
+    .lerd-tabs [role=tab]:hover:not(:disabled) { color: var(--lerd-text); }
+    .lerd-tabs [role=tab][aria-selected=true] { color: var(--lerd-accent); }
+    .lerd-row { display: flex; gap: 16px; align-items: center; justify-content: space-between; }
+    .lerd-row .txt { flex: 1 1 220px; min-width: 0; }
     .lerd-row .txt b { display: block; font-weight: 500; }
-    .lerd-row input[type=text] { width: 220px; }
+    .lerd-row input[type=text] { width: 200px; }
     .lerd-row select { width: 120px; }
-    pre { white-space: pre-wrap; margin: 0; padding: 12px 14px; max-height: 420px; overflow: auto; }
-    #status { min-height: 1.2em; }
+    .meta { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 12px 0; }
+    .stat { padding: 10px 14px; }
+    .stat b { display: block; font-size: 1.6em; font-weight: 600; line-height: 1.2; }
+    progress { width: 100%; height: 6px; margin: 10px 0 2px; }
+    .site-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; padding: 10px 14px; }
+    .site-head .meta { justify-content: flex-end; }
+    table { width: 100%; }
+    td { vertical-align: top; }
+    .wt { width: 38%; }
+    .wt .lerd-mono { display: block; overflow-wrap: anywhere; }
+    td.st { width: 1%; white-space: nowrap; }
+    .note { display: block; }
+    .more { padding: 8px 14px; }
+    pre { white-space: pre-wrap; margin: 0; padding: 12px 14px; }
+    .sec-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+    .intro { margin: 2px 0 8px; }
+    /* Settings: a plain-language summary, then the four groups side by side. */
+    .summary { margin-bottom: 12px; }
+    .sum-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .sum-head h2 { margin: 0; }
+    .sum-head .spacer { flex: 1; }
+    #rules-summary { margin: 6px 0 0; max-width: 78ch; }
+    #groups { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); align-items: start; margin-bottom: 20px; }
+    .set-head { padding: 10px 12px 8px; }
+    .set-head h2 { margin: 0; }
+    .set-head p { margin: 1px 0 0; }
+    .lerd-row .txt .lerd-muted { display: block; }
+    /* A setting that only matters when the one above is on sits under it, and dims while that one is off. */
+    .lerd-row.sub { padding-left: 34px; }
+    .lerd-card:has(input[data-key=REMOVE_ON_BASE]:not(:checked)) .sub { opacity: .5; }
+    /* Remove / Keep: two native radios side by side (lerd styles them). */
+    .seg { display: inline-flex; gap: 12px; }
+    .seg label { display: inline-flex; gap: 5px; align-items: center; }
+    .cmd { display: block; margin-top: 4px; }
+    .row-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .row-title b { display: inline; }
+    .ctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; max-width: 55%; }
+    .chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+    .chips .lerd-pill button { padding: 0 2px; margin-left: 4px; min-height: 0; line-height: 1; border: 0; background: none; cursor: pointer; }
+    .lerd-row input.chip-add { width: 150px; }
+    .lerd-row input[type=number] { width: 80px; }
+    .ctl .meta { flex-wrap: nowrap; }
+    button.link { border: 0; background: none; padding: 0; cursor: pointer; text-decoration: underline; }
+    .sel { user-select: all; }
+    .chips .lerd-pill { text-transform: none; font-size: 11px; font-weight: 500; letter-spacing: 0; padding: 3px 4px 3px 7px; display: inline-flex; align-items: center; }
+    /* A tag editor wraps under its text when the row gets narrow, instead of squeezing it. */
+    .lerd-row:has(.chips) { flex-wrap: wrap; }
+    .ctl:has(.chips) { flex: 1 1 260px; max-width: none; }
+    .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+    .check { padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .check .top { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+    .check .lerd-muted { overflow-wrap: anywhere; }
+    .check.wide { grid-column: 1 / -1; }
+    td.num, th.num { text-align: right; white-space: nowrap; }
+    td.acts { white-space: nowrap; text-align: right; }
+    dialog pre { max-height: 60vh; overflow: auto; white-space: pre; }
+    dialog { max-width: min(900px, 92vw); }
+    dialog.wide { width: min(900px, 92vw); }
+    dialog.wide h2 { overflow-wrap: anywhere; }
+    /* Motion is opt-in: no spin for people who asked for less motion. */
+    .spin { display: inline-block; @media (prefers-reduced-motion: no-preference) { animation: spin 1s linear infinite; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* Modal dialogs: scrolling inside one never scrolls the page behind it. */
+    dialog:modal { overscroll-behavior: contain; }
+    dialog::backdrop { overflow: hidden; overscroll-behavior: contain; }
+    dialog h2 { margin: 0 0 6px; font-size: 1.05em; }
+    dialog form { margin: 12px 0 0; }
+    .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    /* Tabs stay on one row and scroll when the frame is narrow. */
+    .lerd-tabs { display: flex; overflow-x: auto; scroll-snap-type: inline proximity; }
+    .lerd-tabs [role=tab] { flex: none; scroll-snap-align: start; }
+    /* Tables: scroll on their own, and turn into stacked cards when their box is narrow. */
+    .tbl { overflow: auto; container-type: inline-size; }
+    /* Row headers read like the other cells (lerd styles th as a column header). */
+    th[scope=row] { font: inherit; letter-spacing: normal; text-transform: none; color: inherit; border-top: 1px solid var(--lerd-line); }
+    @container (width < 560px) {
+      .tbl table, .tbl tbody, .tbl tr, .tbl th, .tbl td { display: block; width: auto; text-align: left; }
+      .tbl thead { display: none; }
+      .tbl th, .tbl td { border-top: 0; padding: 2px 14px; }
+      .tbl tr { padding: 8px 0; }
+      .tbl tr + tr { border-top: 1px solid var(--lerd-line); }
+      .tbl td[data-label]::before { content: attr(data-label) ": "; opacity: .7; }
+      .tbl td.acts { text-align: left; }
+    }
   </style>
 </head>
 <body>
-  <section class="lerd-section">
-    <span class="lerd-label">Worktree cleanup</span>
-    <p class="lerd-muted">Removes worktrees whose work is finished, with their dev server and own database. Changes save as you make them.</p>
-    <div class="lerd-toolbar">
-      <button id="preview">Preview</button>
-      <button id="run" class="danger">Clean up now</button>
-      <span class="spacer"></span>
-      <span id="status" class="lerd-muted"></span>
+  <div class="head">
+    <div>
+      <h1>Worktree cleanup</h1>
+      <p class="lerd-muted">Removes worktrees whose work is finished, with their dev server and own database.</p>
     </div>
-  </section>
+    <div class="lerd-toolbar">
+      <button type="button" id="preview" class="primary">Preview</button>
+      <button type="button" id="run" class="danger">Clean up now</button>
+    </div>
+  </div>
 
-  <div id="groups"></div>
+  <div id="live" class="vh" aria-live="polite"></div>
+  <div class="lerd-tabs" role="tablist" focusgroup="tablist nomemory" aria-label="Worktree cleanup">
+    <button type="button" role="tab" id="tab-run" data-tab="run" aria-selected="true" focusgroupstart>Run</button>
+    <button type="button" role="tab" id="tab-history" data-tab="history">History</button>
+    <button type="button" role="tab" id="tab-settings" data-tab="settings">Settings</button>
+    <button type="button" role="tab" id="tab-tools" data-tab="tools">Tools</button>
+  </div>
 
-  <section class="lerd-section">
-    <span class="lerd-label">Required tools</span>
-    <div class="lerd-card"><pre id="check" class="lerd-mono lerd-muted">checking…</pre></div>
-  </section>
+  <!-- Run: the live or chosen run -->
+  <div role="tabpanel" aria-labelledby="tab-run" data-panel="run">
+    <div id="run-empty" class="lerd-empty">Preview shows which worktrees would go and why. Nothing changes until you clean up.</div>
+    <div id="run-view" hidden>
+      <section class="lerd-section">
+        <div class="meta" id="run-meta"></div>
+        <progress id="bar" max="1" value="0" aria-label="Run progress"></progress>
+        <div id="phase" class="lerd-muted"></div>
+        <div class="stats" id="stats"></div>
+        <div class="lerd-toolbar">
+          <label><input type="checkbox" id="show-kept"> Show kept worktrees</label>
+          <span class="spacer"></span>
+          <span id="warns" class="lerd-muted"></span>
+        </div>
+      </section>
+      <div id="sites"></div>
+    </div>
+  </div>
 
-  <section class="lerd-section" id="outbox" hidden>
-    <span class="lerd-label">Result</span>
-    <div class="lerd-card"><pre id="out" class="lerd-mono"></pre></div>
-  </section>
+  <div role="tabpanel" aria-labelledby="tab-history" data-panel="history" hidden>
+    <section class="lerd-section">
+      <span class="lerd-label">Recent runs</span>
+      <p class="lerd-muted">Every preview and cleanup, plus scheduled runs that found something. Click one to open it.</p>
+      <div class="lerd-card flush tbl" role="region" aria-label="Recent runs" tabindex="0"><table class="history">
+        <thead><tr><th>When</th><th>Type</th><th>Result</th><th>Took</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table></div>
+      <div id="history-empty" class="lerd-empty" hidden>No runs yet.</div>
+    </section>
+  </div>
+
+  <div role="tabpanel" aria-labelledby="tab-settings" data-panel="settings" hidden>
+    <section class="lerd-card summary" aria-labelledby="sum-title">
+      <div class="sum-head">
+        <h2 id="sum-title">In short</h2>
+        <span class="lerd-muted">Changes save as you make them.</span>
+        <span class="spacer"></span>
+        <button type="button" id="reset-all">Reset all</button>
+      </div>
+      <p id="rules-summary"></p>
+    </section>
+    <div id="groups"></div>
+  </div>
+
+  <div role="tabpanel" aria-labelledby="tab-tools" data-panel="tools" hidden>
+    <section class="lerd-section">
+      <div class="sec-head">
+        <span class="lerd-label">System check</span>
+        <span class="meta"><span id="check-pill"></span><button id="recheck">Check again</button></span>
+      </div>
+      <p class="lerd-muted intro">Everything the cleanup needs. A failed line names the command that fixes it.</p>
+      <div class="checks" id="checks" aria-busy="false"><div class="lerd-empty">Checking…</div></div>
+    </section>
+    <section class="lerd-section">
+      <span class="lerd-label">Storage</span>
+      <div class="stats" id="storage"></div>
+      <p class="lerd-muted">Data folder: <span class="lerd-mono sel" id="datadir"></span></p>
+    </section>
+    <section class="lerd-section">
+      <div class="sec-head">
+        <span class="lerd-label">Saved patches</span>
+        <span class="meta"><button id="del-all" class="danger" hidden>Delete all</button></span>
+      </div>
+      <p class="lerd-muted intro">Uncommitted changes saved just before a worktree was removed. Restore one in a checkout with <span class="lerd-mono sel">git apply &lt;patch&gt;</span>.</p>
+      <div class="lerd-card flush tbl" id="patches-card" role="region" aria-label="Saved patches" tabindex="0"><table>
+        <thead><tr><th>Worktree</th><th>Last saved</th><th class="num">Size</th><th></th></tr></thead>
+        <tbody id="patches"></tbody>
+      </table></div>
+      <div id="patches-empty" class="lerd-empty" hidden>No saved patches.</div>
+    </section>
+  </div>
 
   <script src="lerd.js"></script>
   <script>
+    // A key starting with '>' belongs to the setting above it.
     const GROUPS = [
-      ['What counts as finished', ['REMOVE_MERGED', 'REMOVE_CLOSED', 'REMOVE_ON_BASE', 'BASE_BRANCHES', 'MIN_AGE_HOURS']],
-      ['Uncommitted changes', ['DIRTY_MERGED', 'DIRTY_CLOSED', 'DIRTY_ON_BASE', 'SAVE_PATCH']],
-      ['Safety', ['SKIP_BUSY', 'REQUIRE_IDLE', 'DROP_DATABASE', 'EXCLUDE_SITES']],
-      ['Schedule', ['@schedule', 'SCHEDULE_EVERY', 'NOTIFY']],
+      ['Removal rules', 'A worktree goes when any rule that is on matches.',
+        ['REMOVE_MERGED', 'REMOVE_CLOSED', 'REMOVE_ON_BASE', '>BASE_BRANCHES', '>MIN_AGE_HOURS']],
+      ['Uncommitted changes', 'What to do when a finished worktree still has changes.',
+        ['DIRTY_MERGED', 'DIRTY_CLOSED', 'DIRTY_ON_BASE', 'SAVE_PATCH']],
+      ['Safety', 'Keep a finished worktree for now, or leave things alone.',
+        ['SKIP_BUSY', 'REQUIRE_IDLE', 'DROP_DATABASE', 'EXCLUDE_SITES']],
+      ['Schedule', 'Let lerd run the cleanup for you.',
+        ['@schedule', 'SCHEDULE_EVERY', 'NOTIFY']],
     ];
     const LABELS = {
-      REMOVE_MERGED: 'PR merged', REMOVE_CLOSED: 'PR closed without merging',
-      REMOVE_ON_BASE: 'Detached or no PR, HEAD already on a base branch', BASE_BRANCHES: 'Base branches',
-      MIN_AGE_HOURS: 'Minimum age (hours)', DIRTY_MERGED: 'Merged PR', DIRTY_CLOSED: 'Closed PR',
-      DIRTY_ON_BASE: 'Detached / on base branch', SAVE_PATCH: 'Save changes as a patch first',
-      SKIP_BUSY: 'Skip worktrees a process is using', REQUIRE_IDLE: 'Skip worktrees lerd saw activity on',
-      DROP_DATABASE: "Drop the worktree's own database",
-      EXCLUDE_SITES: 'Never touch these sites', SCHEDULE_EVERY: 'Run every', NOTIFY: 'Notify after a scheduled run',
+      REMOVE_MERGED: 'PR merged', REMOVE_CLOSED: 'PR closed', REMOVE_ON_BASE: 'Landed on a base branch',
+      BASE_BRANCHES: 'Base branches', MIN_AGE_HOURS: 'Wait at least',
+      DIRTY_MERGED: 'PR merged', DIRTY_CLOSED: 'PR closed', DIRTY_ON_BASE: 'Landed or detached',
+      SAVE_PATCH: 'Save a patch first', SKIP_BUSY: 'Skip folders in use', REQUIRE_IDLE: 'Skip recently served',
+      DROP_DATABASE: 'Drop its own database', EXCLUDE_SITES: 'Never touch',
+      SCHEDULE_EVERY: 'Clean up every', NOTIFY: 'Notify me',
+    };
+    const DESCS = {
+      REMOVE_MERGED: 'Or its detached HEAD is in a merged PR.',
+      REMOVE_CLOSED: 'Closed without merging.',
+      REMOVE_ON_BASE: 'No PR, and its HEAD is already on a base branch.',
+      BASE_BRANCHES: 'Branches on origin that count as landed.',
+      MIN_AGE_HOURS: 'A new worktree looks landed too, so wait.',
+      DIRTY_MERGED: '', DIRTY_CLOSED: '',
+      DIRTY_ON_BASE: 'Usually new work, so Keep is the safe choice.',
+      SAVE_PATCH: 'Restore with git apply. Listed under Tools.',
+      SKIP_BUSY: "A shell, editor or agent is in the folder.",
+      REQUIRE_IDLE: 'lerd served it within its idle timeout.',
+      DROP_DATABASE: 'If lerd refuses, the worktree stays.',
+      EXCLUDE_SITES: 'These sites are skipped entirely.',
+      SCHEDULE_EVERY: 'lerd checks every 15 minutes; this is how often it acts.',
+      NOTIFY: 'After a scheduled run removes something.',
+    };
+    const DURATIONS = { '15m': '15 minutes', '30m': '30 minutes', '1h': 'hour', '3h': '3 hours', '6h': '6 hours', '12h': '12 hours', '1d': 'day' };
+    // verdict / outcome -> [label, pill class]
+    const STATE = {
+      remove: ['Will remove', 'warn'], removing: ['Removing…', 'accent'], removed: ['Removed', 'ok'],
+      failed: ['Failed', 'bad'], kept: ['Kept', ''], keep: ['Kept', ''], skip: ['Skipped', ''],
     };
     const $ = (id) => document.getElementById(id);
-    const status = (t) => { $('status').textContent = t; if (t) setTimeout(() => $('status').textContent === t && ($('status').textContent = ''), 2500); };
     const parse = (b) => typeof b === 'string' ? JSON.parse(b) : b;
-
-    async function save(key, value) {
-      try {
-        await lerd.api('api?action=settings', { method: 'POST', body: { [key]: value } });
-        status('saved');
-      } catch (e) { status(e.message); load(); }
+    const api = (path, opts) => lerd.api('api?action=' + path, opts).then(parse);
+    const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+    const pill = (text, cls) => el('span', 'lerd-pill' + (cls ? ' ' + cls : ''), text);
+    const rtf = new Intl.RelativeTimeFormat(lerd.context.lang || 'en', { numeric: 'auto' });
+    function ago(sec) {
+      const d = sec - Date.now() / 1000;
+      for (const [u, s] of [['day', 86400], ['hour', 3600], ['minute', 60]]) if (Math.abs(d) >= s) return rtf.format(Math.round(d / s), u);
+      return rtf.format(Math.round(d), 'second');
     }
+    const when = (sec) => new Date(sec * 1000).toLocaleString(lerd.context.lang || undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    const took = (s) => s == null ? '' : s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+    const kind = (r) => r.surface === 'schedule' ? ['Scheduled', 'accent'] : r.mode === 'apply' ? ['Clean up', 'warn'] : ['Preview', ''];
 
-    function control(s) {
-      let el;
-      if (s.type === 'bool') {
-        el = document.createElement('input'); el.type = 'checkbox'; el.checked = s.value === 'yes';
-        el.onchange = () => save(s.key, el.checked ? 'yes' : 'no');
-      } else if (s.type === 'action') {
-        el = document.createElement('select');
-        for (const v of ['remove', 'keep']) el.add(new Option(v === 'remove' ? 'Remove' : 'Keep', v, false, s.value === v));
-        el.onchange = () => save(s.key, el.value);
-      } else if (s.key === 'SCHEDULE_EVERY') {
-        el = document.createElement('select');
-        const opts = ['15m', '30m', '1h', '3h', '6h', '12h', '1d'];
-        if (!opts.includes(s.value)) opts.push(s.value);
-        for (const v of opts) el.add(new Option(v, v, false, s.value === v));
-        el.onchange = () => save(s.key, el.value);
-      } else {
-        el = document.createElement('input'); el.type = 'text'; el.value = s.value;
-        el.placeholder = s.type === 'list' ? 'space separated' : '';
-        el.onchange = () => save(s.key, el.value.trim());
+    // ---- tabs
+    const TABS = [...document.querySelectorAll('[role=tab]')];
+    function tab(name) {
+      for (const t of TABS) {
+        const sel = t.dataset.tab === name;
+        t.setAttribute('aria-selected', sel); t.toggleAttribute('focusgroupstart', sel);
+        if (!HAS_FOCUSGROUP) t.tabIndex = sel ? 0 : -1;
+        if (sel) t.scrollIntoView({ block: 'nearest', inline: 'nearest', container: 'nearest' });
       }
-      return el;
+      document.querySelectorAll('[data-panel]').forEach((p) => p.hidden = p.dataset.panel !== name);
+      if (name === 'history') loadHistory();
+      if (name === 'settings') loadSettings().catch((e) => { $('groups').textContent = e.message; });
+      if (name === 'tools') { loadChecks(); loadStorage(); loadPatches(); }
     }
-
-    function row(title, desc, el) {
-      const r = document.createElement('div'); r.className = 'lerd-row';
-      const t = document.createElement('div'); t.className = 'txt';
-      t.innerHTML = '<b></b><span class="lerd-muted"></span>';
-      t.querySelector('b').textContent = title; t.querySelector('span').textContent = desc;
-      r.append(t, el); return r;
-    }
-
-    async function load() {
-      const settings = await lerd.api('api?action=settings').then(parse);
-      const byKey = Object.fromEntries(settings.map((s) => [s.key, s]));
-      const root = $('groups'); root.textContent = '';
-      for (const [name, keys] of GROUPS) {
-        const sec = document.createElement('section'); sec.className = 'lerd-section';
-        sec.innerHTML = '<span class="lerd-label"></span><div class="lerd-card flush"></div>';
-        sec.querySelector('.lerd-label').textContent = name;
-        const card = sec.querySelector('.lerd-card');
-        for (const k of keys) {
-          if (k === '@schedule') {
-            // lerd owns the switch: a plugin's token cannot allow its own schedule.
-            card.append(row('Run automatically', 'Turn on with the Schedule switch on this plugin\'s card in System > Plugins, or lerd plugin schedule worktree-cleanup on.', document.createElement('span')));
-            continue;
-          }
-          const s = byKey[k]; if (!s) continue;
-          const desc = s.description + (s.value !== s.default ? `  (default: ${s.default || 'none'})` : '');
-          card.append(row(LABELS[k] || k, desc, control(s)));
-        }
-        root.append(sec);
-      }
-    }
-
-    async function show(action, method, label) {
-      $('outbox').hidden = false; $('out').textContent = label + '…';
-      try { $('out').textContent = await lerd.api('api?action=' + action, { method }); }
-      catch (e) { $('out').textContent = e.message; }
-    }
-
-    $('preview').onclick = () => show('preview', 'GET', 'Checking every worktree');
-    $('run').onclick = () => {
-      const d = document.createElement('dialog');
-      d.innerHTML = '<p>Remove every finished worktree now, using the settings above?</p><div class="lerd-toolbar"><span class="spacer"></span><button value="no">Cancel</button><button value="yes" class="danger">Clean up</button></div>';
-      d.querySelectorAll('button').forEach((b) => b.onclick = () => { d.close(); d.remove(); if (b.value === 'yes') show('run', 'POST', 'Cleaning up'); });
-      document.body.append(d); d.showModal();
+    TABS.forEach((t) => t.onclick = () => tab(t.dataset.tab));
+    if (!Object.hasOwn(HTMLElement.prototype, 'focusGroup')) TABS.forEach((t, k) => t.tabIndex = k ? -1 : 0);
+    // Arrow keys move between tabs; Enter or Space opens one (each tab loads data, so focus alone doesn't).
+    // ponytail: native focusgroup where the browser has it, else this roving tabindex.
+    var HAS_FOCUSGROUP = Object.hasOwn(HTMLElement.prototype, 'focusGroup');
+    if (!HAS_FOCUSGROUP) document.querySelector('[role=tablist]').onkeydown = (e) => {
+      const i = TABS.indexOf(document.activeElement), n = TABS.length;
+      const j = { ArrowRight: (i + 1) % n, ArrowLeft: (i - 1 + n) % n, Home: 0, End: n - 1 }[e.key];
+      if (i < 0 || j == null) return;
+      e.preventDefault(); TABS.forEach((t, k) => t.tabIndex = k === j ? 0 : -1); TABS[j].focus();
     };
 
-    load().catch((e) => { $('groups').textContent = e.message; });
-    lerd.api('api?action=check').then((t) => $('check').textContent = t).catch((e) => $('check').textContent = e.message);
+    // One polite announcement at a time, for screen readers (ariaNotify, else a live region).
+    function announce(text) {
+      if (document.ariaNotify) return document.ariaNotify(text);
+      const live = $('live'); live.textContent = ''; requestAnimationFrame(() => live.textContent = text);
+    }
+
+    // ---- a run: fold its events into one state, then draw it
+    let watching = 0, run = null, busy = false;
+    function fold(events) {
+      const r = { start: null, done: null, sites: new Map(), warns: [], scanned: 0, removing: null };
+      for (const e of events) {
+        if (e.e === 'start') { r.start = e; for (const s of e.sites) r.sites.set(s, { name: s, total: null, done: false, rows: new Map() }); }
+        else if (e.e === 'site') { const s = r.sites.get(e.site); if (s) s.total = e.worktrees; }
+        else if (e.e === 'site_done') { const s = r.sites.get(e.site); if (s) { s.done = true; r.scanned++; } }
+        else if (e.e === 'wt') r.sites.get(e.site)?.rows.set(e.name, { ...e, state: e.verdict });
+        else if (['removing', 'removed', 'failed', 'kept'].includes(e.e)) {
+          const row = r.sites.get(e.site)?.rows.get(e.name);
+          if (row) { row.state = e.e; if (e.e !== 'removing') row.outcome = e.reason; }
+          r.removing = e.e === 'removing' ? e : null;
+        }
+        else if (e.e === 'warn' || e.e === 'error') r.warns.push(e);
+        else if (e.e === 'done') r.done = e;
+      }
+      return r;
+    }
+
+    function draw(r, running) {
+      $('run-empty').hidden = true; $('run-view').hidden = false;
+      const s = r.start || { mode: 'preview', surface: 'cli', sites: [] };
+      const rows = [...r.sites.values()].flatMap((x) => [...x.rows.values()]);
+      const count = (...st) => rows.filter((x) => st.includes(x.state)).length;
+      const apply = s.mode === 'apply', planned = rows.filter((x) => x.verdict === 'remove').length;
+
+      const meta = $('run-meta'); meta.textContent = '';
+      const [k, kc] = kind(s); meta.append(pill(k, kc));
+      if (running) { const p = pill('', 'accent'); p.append(el('span', 'spin', '◌'), ' Running'); meta.append(p); }
+      else if (r.done) meta.append(pill(r.done.failed ? 'Finished with failures' : 'Finished', r.done.failed ? 'bad' : 'ok'));
+      else meta.append(pill('Stopped before finishing', 'bad'));
+      if (s.at) meta.append(el('span', 'lerd-muted', `${when(s.at)} · ${ago(s.at)}`));
+      if (r.done) meta.append(el('span', 'lerd-muted', `· took ${took(r.done.seconds)}`));
+
+      // Progress: scanning is the first half of a cleanup, removing the second.
+      const nSites = s.sites.length || 1, scanP = r.scanned / nSites;
+      const handled = count('removed', 'failed', 'kept');
+      const bar = $('bar'); bar.hidden = !running && !!r.done;
+      bar.value = apply ? (scanP + (r.scanned === nSites && planned ? handled / planned : 0)) / 2 : scanP;
+      $('phase').textContent = !running ? (r.done ? '' : 'The run ended without finishing; it may have been stopped.')
+        : r.scanned < nSites ? `Scanning sites… ${r.scanned} of ${nSites} done`
+        : r.removing ? `Removing ${r.removing.site} / ${r.removing.name} (${handled + 1} of ${planned})`
+        : 'Finishing…';
+
+      const stats = $('stats'); stats.textContent = '';
+      const stat = (n, label) => { const c = el('div', 'lerd-card stat'); c.append(el('b', null, n), el('span', 'lerd-muted', label)); stats.append(c); };
+      stat(rows.length, `worktrees in ${s.sites.length} sites`);
+      if (apply) { stat(count('removed'), 'removed'); if (count('failed')) stat(count('failed'), 'failed'); }
+      else stat(planned, 'would be removed');
+      stat(count('keep', 'kept', 'skip'), 'kept');
+
+      $('warns').textContent = r.warns.map((w) => (w.site ? w.site + ': ' : '') + w.message).join(' · ');
+
+      // Sites with something to show get a card; the rest fold into two lines.
+      const showKept = $('show-kept').checked, root = $('sites'); root.textContent = '';
+      const pending = [], quiet = [];
+      for (const site of r.sites.values()) {
+        const all = [...site.rows.values()], shown = all.filter((x) => showKept || !['keep', 'skip'].includes(x.state));
+        if (!shown.length) { (site.done ? quiet : pending).push(site); continue; }
+        const sec = el('section', 'lerd-section'), card = el('div', 'lerd-card flush');
+        const head = el('div', 'site-head'), m = el('div', 'meta');
+        const t = el('b', null, site.name);
+        if (!site.done) { const sp = el('span', 'spin lerd-muted', ' ◌'); t.append(sp); }
+        const nr = all.filter((x) => x.verdict === 'remove').length;
+        if (nr) m.append(pill(apply ? `${all.filter((x) => x.state === 'removed').length}/${nr} removed` : `${nr} to remove`, apply ? 'ok' : 'warn'));
+        m.append(el('span', 'lerd-muted', site.total == null ? 'waiting' : `${site.total} worktree${site.total === 1 ? '' : 's'}`));
+        head.append(t, m); card.append(head);
+        if (shown.length) {
+          const wrap = el('div', 'tbl'), tb = el('table'), body = el('tbody'), hd = el('thead'), hr = el('tr');
+          for (const h of ['Worktree', 'State', 'Why']) hr.append(el('th', null, h));
+          hd.append(hr); tb.append(hd);
+          for (const w of shown) {
+            const tr = el('tr'), a = el('th', 'wt'), b = el('td', 'st'), c = el('td');
+            a.scope = 'row'; c.dataset.label = 'Why';
+            a.append(el('span', 'lerd-mono', w.name), el('span', 'lerd-muted lerd-mono', w.branch));
+            const [lab, cls] = STATE[w.state] || [w.state, ''];
+            b.append(pill(lab, cls));
+            c.append(el('span', null, w.reason));
+            if (w.note) c.append(el('span', 'note lerd-muted', w.note));
+            if (w.outcome && w.state !== 'removed') c.append(el('span', 'note lerd-muted', w.outcome));
+            tr.append(a, b, c); body.append(tr);
+          }
+          tb.append(body); wrap.append(tb); card.append(wrap);
+        }
+        const hidden = all.length - shown.length;
+        if (hidden) card.append(el('div', 'more lerd-muted', `${hidden} more kept`));
+        sec.append(card); root.append(sec);
+      }
+      const summary = (title, list, text) => {
+        if (!list.length) return;
+        const card = el('div', 'lerd-card'), r2 = el('div', 'site-head');
+        r2.append(el('b', null, title), el('span', 'lerd-muted', list.map(text).join(' · ')));
+        card.append(r2); const sec = el('section', 'lerd-section'); sec.append(card); root.append(sec);
+      };
+      summary(`Scanning ${pending.length} site${pending.length === 1 ? '' : 's'}…`, pending, (s) => s.name);
+      summary(`Nothing finished in ${quiet.length} site${quiet.length === 1 ? '' : 's'}`, quiet, (s) => `${s.name} (${s.rows.size})`);
+    }
+    $('show-kept').onchange = () => run && draw(run.state, run.running);
+
+    // Poll a run's events until it finishes. A newer watch() stops older ones.
+    async function watch(id) {
+      const me = ++watching; let from = 0, events = [], misses = 0;
+      tab('run');
+      for (;;) {
+        let res;
+        try { res = await api(`events&id=${encodeURIComponent(id)}&from=${from}`); }
+        catch (e) { if (me === watching) $('phase').textContent = e.message; return; }
+        if (me !== watching) return;
+        events = events.concat(res.events); from = res.next;
+        const state = fold(events), live = res.running || (!state.done && misses++ < 2);
+        const was = run?.id === id && run.running;
+        run = { id, state, running: live }; draw(state, live); setBusy(live);
+        if (!live) { if (was) announce(runSummary(state)); return; }
+        await new Promise((r) => setTimeout(r, 600));
+      }
+    }
+    function runSummary(r) {
+      if (!r.done) return 'The run stopped before finishing.';
+      const d = r.done, apply = r.start?.mode === 'apply';
+      return apply ? `Cleanup finished: ${d.removed} removed${d.failed ? `, ${d.failed} failed` : ''}.`
+        : `Preview finished: ${d.planned} worktree${d.planned === 1 ? '' : 's'} would be removed.`;
+    }
+    function setBusy(b) { busy = b; $('preview').disabled = b; $('run').disabled = b; }
+
+    async function start(mode) {
+      setBusy(true);
+      try {
+        const { id } = await api('start', { method: 'POST', body: { mode } });
+        announce(mode === 'apply' ? 'Cleanup started.' : 'Preview started.'); watch(id);
+      }
+      catch (e) { setBusy(false); tab('run'); $('run-empty').hidden = false; $('run-empty').textContent = e.message; }
+    }
+    $('preview').onclick = () => start('preview');
+    $('run').onclick = async () => {
+      if (await ask('Clean up now?', 'Removes every finished worktree, using your settings. Run Preview first to see the list.', 'Clean up')) start('apply');
+    };
+
+    // ---- history
+    async function loadHistory() {
+      let runs;
+      try { runs = await api('runs'); } catch (e) { $('history-empty').hidden = false; $('history-empty').textContent = e.message; return; }
+      const body = $('history'); body.textContent = '';
+      $('history-empty').hidden = runs.length > 0;
+      for (const r of runs) {
+        const tr = el('tr', 'clickable'), a = el('th'), b = el('td'), c = el('td', 'meta'), d = el('td', 'lerd-muted');
+        a.scope = 'row'; b.dataset.label = 'Type'; d.dataset.label = 'Took';
+        const open = el('button', 'link', r.at ? ago(r.at) : r.id); open.type = 'button';
+        open.onclick = (e) => { e.stopPropagation(); watch(r.id); };
+        a.append(open, el('span', 'note lerd-muted', r.at ? when(r.at) : ''));
+        b.append(pill(...kind(r)));
+        if (r.running) c.append(pill('Running', 'accent'));
+        else if (!r.done) c.append(pill('Stopped', 'bad'));
+        if (r.mode === 'apply') { c.append(pill(`${r.removed} removed`, r.removed ? 'ok' : '')); if (r.failed) c.append(pill(`${r.failed} failed`, 'bad')); }
+        else c.append(pill(`${r.planned} to remove`, r.planned ? 'warn' : ''));
+        c.append(el('span', 'lerd-muted', `of ${r.worktrees} in ${r.sites} sites`));
+        if (r.warnings) c.append(pill(`${r.warnings} warning${r.warnings > 1 ? 's' : ''}`, 'warn'));
+        d.textContent = took(r.seconds);
+        tr.append(a, b, c, d); tr.onclick = () => watch(r.id); body.append(tr);
+      }
+      return runs;
+    }
+
+    // ---- dialogs (lerd's look: a <dialog> with its buttons in a lerd-toolbar)
+    // Native modal <dialog>: the browser traps focus, closes on Esc and returns focus.
+    // closedby="any" adds click-outside; Safari lacks it, so a small fallback does the same.
+    let dlgN = 0;
+    function modal(title, cls) {
+      const d = el('dialog', cls), h = el('h2', null, title);
+      h.id = 'dlg-' + ++dlgN; d.setAttribute('aria-labelledby', h.id); d.setAttribute('closedby', 'any'); d.append(h);
+      if (!('closedBy' in HTMLDialogElement.prototype)) {
+        const out = (e) => { const r = d.getBoundingClientRect(); return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom; };
+        let down = false;
+        d.addEventListener('pointerdown', (e) => { down = out(e); });
+        d.addEventListener('pointerup', (e) => { if (down && out(e)) d.close(); });
+      }
+      d.addEventListener('close', () => d.remove());
+      return d;
+    }
+    function buttons(...list) { // [label, value, cls, autofocus]
+      const f = el('form'), tb = el('div', 'lerd-toolbar'); f.method = 'dialog'; tb.append(el('span', 'spacer'));
+      for (const [label, value, cls, focus] of list) { const b = el('button', cls, label); b.value = value; b.autofocus = !!focus; tb.append(b); }
+      f.append(tb); return f;
+    }
+    function ask(title, text, okLabel) {
+      return new Promise((resolve) => {
+        const d = modal(title);
+        // The safe choice gets focus, so Enter never destroys anything.
+        d.append(el('p', null, text), buttons(['Cancel', 'no', null, true], [okLabel, 'yes', 'danger']));
+        d.addEventListener('close', () => resolve(d.returnValue === 'yes'));
+        document.body.append(d); d.showModal();
+      });
+    }
+    function viewer(title, text) {
+      const d = modal(title, 'wide');
+      d.append(el('pre', 'lerd-mono', text), buttons(['Close', 'close', null, true]));
+      document.body.append(d); d.showModal();
+    }
+    const kb = (k) => k < 1024 ? `${k} KB` : `${(k / 1024).toFixed(k < 10240 ? 1 : 0)} MB`;
+    const bytes = (b) => kb(Math.max(1, Math.round(b / 1024)));
+    const words = (list, last = 'and') => list.length < 2 ? list.join('') : `${list.slice(0, -1).join(', ')} ${last} ${list.at(-1)}`;
+
+    // ---- settings
+    let settings = {}, info = null;
+    const val = (k) => settings[k]?.value ?? '';
+    const on = (k) => val(k) === 'yes';
+    const listOf = (k) => val(k).split(/\s+/).filter(Boolean);
+
+    function summarize() {
+      const out = [], line = (t) => out.push(t);
+      const when = [];
+      const pr = [on('REMOVE_MERGED') && 'merged', on('REMOVE_CLOSED') && 'closed'].filter(Boolean);
+      if (pr.length) when.push(`its PR was ${pr.join(' or ')}`);
+      if (on('REMOVE_ON_BASE')) when.push(`its HEAD has been on ${listOf('BASE_BRANCHES').join(' / ') || 'a base branch'} for ${val('MIN_AGE_HOURS')} hours`);
+      line(when.length ? `Removes a worktree when ${words(when, 'or')}.` : 'Every rule is off, so nothing is removed.');
+      const guards = [];
+      if (on('SKIP_BUSY')) guards.push('a process is using it');
+      if (on('REQUIRE_IDLE')) guards.push('lerd saw recent activity on it');
+      if (guards.length) line(`Keeps it for now while ${words(guards, 'or')}.`);
+      const D = { DIRTY_MERGED: 'after a merged PR', DIRTY_CLOSED: 'after a closed PR', DIRTY_ON_BASE: 'when only on a base branch' };
+      const rm = Object.keys(D).filter((k) => val(k) === 'remove'), kp = Object.keys(D).filter((k) => val(k) !== 'remove');
+      const saved = on('SAVE_PATCH') ? ' (the changes are saved as a patch first)' : ' (the changes are thrown away)';
+      line(!rm.length ? 'A worktree with uncommitted changes is always kept.'
+        : !kp.length ? `A worktree with uncommitted changes is removed anyway${saved}.`
+        : `A worktree with uncommitted changes is removed ${words(rm.map((k) => D[k]))}${saved}, and kept ${words(kp.map((k) => D[k]))}.`);
+      line(on('DROP_DATABASE') ? 'Its own database is dropped with it.' : 'Its own database is left in place.');
+      if (listOf('EXCLUDE_SITES').length) line(`Never touches ${words(listOf('EXCLUDE_SITES'))}.`);
+      const sch = info?.schedule?.status;
+      line(sch === 'ok' ? `Runs on its own every ${DURATIONS[val('SCHEDULE_EVERY')] || val('SCHEDULE_EVERY')}.` : 'Runs only when you start it: the schedule is not allowed yet.');
+      $('rules-summary').textContent = out.join(' ');
+    }
+
+    async function save(key, value, rowEl) {
+      const flag = rowEl?.querySelector('.saved');
+      try {
+        await api('settings', { method: 'POST', body: { [key]: value } });
+        settings[key].value = value; summarize(); markChanged(key, rowEl);
+        if (flag) { flag.hidden = false; flag.className = 'lerd-pill ok saved'; flag.textContent = 'Saved'; clearTimeout(flag.t); flag.t = setTimeout(() => flag.hidden = true, 1800); }
+        announce(`${LABELS[key] || key} saved.`);
+      } catch (e) {
+        if (flag) { flag.hidden = false; flag.className = 'lerd-pill bad saved'; flag.textContent = e.message; }
+        announce(`Not saved: ${e.message}`);
+        setTimeout(loadSettings, 2500);
+      }
+    }
+    async function reset(keys) {
+      await api('reset', { method: 'POST', body: { keys } });
+      await loadSettings(); announce(keys.length ? `${LABELS[keys[0]] || keys[0]} reset.` : 'All settings reset.');
+    }
+
+    function chips(s, rowEl) {
+      const box = el('div', 'chips'), input = el('input', 'chip-add');
+      input.type = 'text'; input.placeholder = s.key === 'EXCLUDE_SITES' ? 'Add a site…' : 'Add a branch…';
+      input.setAttribute('aria-label', `Add to ${LABELS[s.key]}`);
+      const dl = el('datalist'); dl.id = 'dl-' + s.key;
+      const suggest = s.key === 'EXCLUDE_SITES' ? (info?.sites || []).map((x) => x.name) : ['main', 'master', 'staging', 'develop', 'production', 'trunk'];
+      input.setAttribute('list', dl.id);
+      const draw = () => {
+        box.textContent = '';
+        const items = listOf(s.key);
+        for (const v of items) {
+          const p = pill(v), x = el('button', null, '×');
+          x.setAttribute('aria-label', `Remove ${v}`);
+          x.onclick = () => save(s.key, items.filter((i) => i !== v).join(' '), rowEl).then(draw);
+          p.append(x); box.append(p);
+        }
+        if (!items.length) box.append(el('span', 'lerd-muted', 'none'));
+        dl.textContent = ''; for (const o of suggest.filter((o) => !items.includes(o))) dl.append(new Option(o));
+        box.append(input, dl);
+      };
+      input.onkeydown = (e) => {
+        if (e.key !== 'Enter') return;
+        const v = input.value.trim(); if (!v) return;
+        const items = listOf(s.key); input.value = '';
+        if (!items.includes(v)) save(s.key, [...items, ...v.split(/\s+/)].join(' '), rowEl).then(draw);
+      };
+      draw(); return box;
+    }
+
+    function control(s, rowEl) {
+      const label = LABELS[s.key] || s.key;
+      if (s.type === 'bool') {
+        const c = el('input'); c.type = 'checkbox'; c.dataset.key = s.key; c.checked = s.value === 'yes'; c.setAttribute('aria-label', label);
+        c.onchange = () => save(s.key, c.checked ? 'yes' : 'no', rowEl); return c;
+      }
+      if (s.type === 'action') {
+        const g = el('div', 'seg'); g.setAttribute('role', 'radiogroup'); g.setAttribute('aria-label', label);
+        for (const v of ['remove', 'keep']) {
+          const l = el('label'), r = el('input'); r.type = 'radio'; r.name = s.key; r.value = v; r.checked = s.value === v;
+          r.onchange = () => save(s.key, v, rowEl);
+          l.append(r, v === 'remove' ? 'Remove' : 'Keep'); g.append(l);
+        }
+        return g;
+      }
+      if (s.key === 'SCHEDULE_EVERY') {
+        const c = el('select'); c.setAttribute('aria-label', label);
+        const opts = Object.keys(DURATIONS); if (!opts.includes(s.value)) opts.push(s.value);
+        for (const v of opts) c.add(new Option(`every ${DURATIONS[v] || v}`, v, false, s.value === v));
+        c.onchange = () => save(s.key, c.value, rowEl); return c;
+      }
+      if (s.type === 'int') {
+        const w = el('span', 'meta'), c = el('input'); c.type = 'number'; c.min = 0; c.step = 1; c.inputMode = 'numeric'; c.value = s.value;
+        c.setAttribute('aria-label', label);
+        c.onchange = () => save(s.key, String(Math.max(0, parseInt(c.value, 10) || 0)), rowEl);
+        w.append(c, el('span', 'lerd-muted', 'hours')); return w;
+      }
+      if (s.type === 'list') return chips(s, rowEl);
+      const c = el('input'); c.type = 'text'; c.value = s.value; c.setAttribute('aria-label', label);
+      c.onchange = () => save(s.key, c.value.trim(), rowEl); return c;
+    }
+
+    function markChanged(key, rowEl) {
+      const s = settings[key], box = rowEl?.querySelector('.changed'); if (!box) return;
+      box.textContent = '';
+      if (s.value === s.default) return;
+      const r = el('button', 'link lerd-muted', 'Reset');
+      r.type = 'button'; r.title = `Default: ${s.default || 'none'}`;
+      r.setAttribute('aria-label', `Reset ${LABELS[key] || key} to ${s.default || 'none'}`);
+      r.onclick = () => reset([key]);
+      box.append(pill('Changed', 'accent'), r);
+    }
+
+    function settingRow(title, desc, rowCtl) {
+      const r = el('div', 'lerd-row'), t = el('div', 'txt'), head = el('div', 'row-title');
+      const saved = pill('Saved', 'ok'); saved.classList.add('saved'); saved.hidden = true;
+      const changed = el('span', 'changed meta');
+      head.append(el('b', null, title), changed, saved);
+      t.append(head); if (desc) t.append(el('span', 'lerd-muted', desc));
+      const c = el('div', 'ctl'); r.append(t, c);
+      if (rowCtl) c.append(rowCtl(r));
+      return r;
+    }
+
+    function scheduleRow() {
+      const s = info?.schedule || {};
+      const [lab, cls] = s.status === 'ok' ? ['On', 'ok'] : s.status === 'waiting' ? ['Waiting for you', 'warn'] : s.status === 'unknown' ? ['Unknown', ''] : ['Off', ''];
+      const bits = [];
+      if (s.last && s.last !== 'never') bits.push(`lerd last checked at ${s.last}`);
+      if (s.status === 'ok' && s.next) bits.push(`next ${s.next}`);
+      if (info?.last_acted) bits.push(`last scheduled cleanup ${ago(info.last_acted)}`);
+      const desc = s.status === 'ok' ? (bits.join(', ') || 'Turn it off with the Schedule switch in System > Plugins.')
+        : 'Only you can allow it: the Schedule switch in System > Plugins, or run';
+      const row = settingRow('Run automatically', desc, () => pill(lab, cls));
+      if (s.status !== 'ok') row.querySelector('.txt').append(el('span', 'lerd-mono sel cmd', 'lerd plugin schedule worktree-cleanup on'));
+      return row;
+    }
+
+    async function loadSettings() {
+      const [list, st] = await Promise.all([api('settings'), api('status').catch(() => null)]);
+      settings = Object.fromEntries(list.map((s) => [s.key, s])); info = st;
+      const root = $('groups'); root.textContent = '';
+      GROUPS.forEach(([name, intro, keys], i) => {
+        const card = el('section', 'lerd-card flush'), head = el('div', 'set-head lerd-row'), h = el('h2', null, name);
+        h.id = 'grp-' + i; card.setAttribute('aria-labelledby', h.id);
+        const ht = el('div', 'txt'); ht.append(h, el('p', 'lerd-muted', intro)); head.append(ht); card.append(head);
+        for (const raw of keys) {
+          if (raw === '@schedule') { card.append(scheduleRow()); continue; }
+          const k = raw.replace(/^>/, ''), s = settings[k]; if (!s) continue;
+          const r = settingRow(LABELS[k] || k, DESCS[k] ?? s.description, (rowEl) => control(s, rowEl));
+          if (raw[0] === '>') r.classList.add('sub');
+          markChanged(k, r); card.append(r);
+        }
+        root.append(card);
+      });
+      summarize();
+    }
+    $('reset-all').onclick = async () => { if (await ask('Reset all settings?', 'Every setting goes back to its default. The schedule permission is not touched.', 'Reset all')) reset([]); };
+
+    // ---- tools
+    async function loadChecks() {
+      const box = $('checks'); $('recheck').disabled = true; $('check-pill').textContent = '';
+      box.textContent = ''; box.append(el('div', 'lerd-empty', 'Checking…')); box.setAttribute('aria-busy', 'true');
+      let list;
+      try { list = await api('check'); } catch (e) { box.textContent = ''; box.append(el('div', 'lerd-empty', e.message)); $('recheck').disabled = false; box.setAttribute('aria-busy', 'false'); return; }
+      box.textContent = '';
+      const LAB = { ok: ['OK', 'ok'], warn: ['Low', 'warn'], fail: ['Problem', 'bad'] };
+      const rank = { fail: 0, warn: 1, ok: 2 };
+      for (const c of [...list].sort((x, y) => rank[x.status] - rank[y.status])) {
+        const t = el('div', 'lerd-card check' + (c.status === 'ok' ? '' : ' wide')), top = el('div', 'top');
+        top.append(el('b', null, c.name), pill(...(LAB[c.status] || [c.status, ''])));
+        t.append(top, el('span', 'lerd-muted', c.detail));
+        if (c.fix) { const f = el('span', 'lerd-muted'); f.append('Fix: ', el('span', 'lerd-mono sel', c.fix)); t.append(f); }
+        box.append(t);
+      }
+      const bad = list.filter((c) => c.status === 'fail').length, warn = list.filter((c) => c.status === 'warn').length;
+      $('check-pill').append(bad ? pill(`${bad} problem${bad > 1 ? 's' : ''}`, 'bad') : warn ? pill('Needs a look', 'warn') : pill('All good', 'ok'));
+      $('recheck').disabled = false; box.setAttribute('aria-busy', 'false');
+      announce(bad ? `System check: ${bad} problem${bad > 1 ? 's' : ''}.` : 'System check: all good.');
+    }
+    $('recheck').onclick = loadChecks;
+
+    async function loadStorage() {
+      const st = await api('status').catch(() => null); if (!st) return;
+      info = st;
+      const box = $('storage'); box.textContent = '';
+      const stat = (n, label) => { const c = el('div', 'lerd-card stat'); c.append(el('b', null, n), el('span', 'lerd-muted', label)); box.append(c); };
+      stat(st.storage.runs, `runs in history · ${kb(st.storage.runs_kb)}`);
+      stat(st.storage.patches, `saved patches · ${kb(st.storage.patches_kb)}`);
+      stat(kb(st.storage.log_kb), 'removal log (cleanup.log)');
+      $('datadir').textContent = st.data_dir;
+    }
+
+    async function loadPatches() {
+      const list = await api('patches').catch(() => []);
+      const body = $('patches'); body.textContent = '';
+      $('patches-empty').hidden = list.length > 0; $('patches-card').hidden = !list.length; $('del-all').hidden = !list.length;
+      // One row per worktree: its saves, newest first (the list comes newest first).
+      const groups = new Map();
+      for (const p of list) { if (!groups.has(p.label)) groups.set(p.label, []); groups.get(p.label).push(p); }
+      for (const [label, saves] of groups) {
+        const p = saves[0], tr = el('tr'), a = el('th'), b = el('td', 'lerd-muted'), c = el('td', 'num lerd-muted'), d = el('td', 'acts');
+        a.scope = 'row'; b.dataset.label = 'Last saved'; c.dataset.label = 'Size';
+        a.append(el('span', 'lerd-mono', label));
+        if (saves.length > 1) a.append(' ', pill(`${saves.length} saves`));
+        b.textContent = ago(p.at); b.title = when(p.at);
+        c.textContent = bytes(saves.reduce((n, x) => n + x.size, 0));
+        const v = el('button', null, saves.length > 1 ? 'View latest' : 'View'), x = el('button', 'danger', 'Delete');
+        v.type = x.type = 'button'; x.setAttribute('aria-label', `Delete patches of ${label}`); v.setAttribute('aria-label', `View patch of ${label}`);
+        v.onclick = async () => { try { viewer(p.name, await lerd.api('api?action=patch&name=' + encodeURIComponent(p.name))); } catch (e) { viewer(p.name, e.message); } };
+        x.onclick = async () => {
+          const what = saves.length > 1 ? `all ${saves.length} saved patches of ${label}` : p.name;
+          if (!await ask('Delete saved patches?', `Deletes ${what}. The changes in them are gone for good.`, 'Delete')) return;
+          await api('patch-delete', { method: 'POST', body: { names: saves.map((x) => x.name) } }); loadPatches(); loadStorage(); announce('Deleted.');
+        };
+        d.append(v, ' ', x); tr.append(a, b, c, d); body.append(tr);
+      }
+    }
+    $('del-all').onclick = async () => {
+      if (!await ask('Delete every saved patch?', 'The uncommitted changes in them are gone for good.', 'Delete all')) return;
+      await api('patch-delete', { method: 'POST', body: { all: true } }); loadPatches(); loadStorage(); announce('All patches deleted.');
+    };
+
+    // ---- start: follow a run in progress, else show the latest one
+    api('current').then(async ({ id }) => {
+      if (id) return watch(id);
+      const runs = await loadHistory();
+      if (runs && runs.length) watch(runs[0].id);
+    }).catch(() => {});
   </script>
 </body>
 </html>
