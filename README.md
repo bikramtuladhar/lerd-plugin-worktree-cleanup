@@ -18,12 +18,14 @@ is kept, per your settings.
 lerd plugin install https://github.com/bikramtuladhar/lerd-plugin-worktree-cleanup
 ```
 
-Usage, every setting and the required tools: [DOCS.md](DOCS.md).
+Usage, every setting and the required tools: [DOCS.md](DOCS.md). What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 ## What it adds
 
-- A dashboard page, **Worktree cleanup**: every setting as a toggle, the
-  schedule, a tool check, Preview (dry run) and Clean up now.
+- A dashboard page, **Worktree cleanup**: Preview (dry run) and Clean up now
+  shown live as they run, a browsable history of past runs, settings with a
+  plain-language summary of your rules, and a Tools tab with a system check,
+  storage use and saved patches.
 - Commands `worktree-cleanup:run`, `:config`.
 - A schedule, `cleanup`, that lerd runs every 15 minutes once you allow it;
   the plugin acts only once `SCHEDULE_EVERY` has passed.
@@ -39,14 +41,17 @@ Usage, every setting and the required tools: [DOCS.md](DOCS.md).
 - Each site's git repository: `git fetch origin`, worktree status, whether HEAD
   is on a base branch.
 - The working folder of running processes (`ps`, `lsof`), to skip worktrees in use.
+- `lerd plugin schedule worktree-cleanup`, to show on the Settings tab whether
+  the schedule is allowed and when it last ran.
 
 ## What it changes
 
 - Removes finished worktrees with `lerd worktree remove` (and `--force` only
   when your rules say to remove one with uncommitted changes).
 - Drops a worktree's own database with `lerd db:share` before removing it.
-- Writes only to its data folder: `config.env`, `cleanup.log`, `patches/`,
-  `last-scheduled-run` (lerd writes `schedule.log` there too).
+- Writes only to its data folder: `config.env`, `cleanup.log`, `runs/` (the
+  last 200 runs, as JSON lines), `patches/`, `last-scheduled-run`, `run.lock`
+  (lerd writes `schedule.log` there too).
 - **Schedule (off until you allow it):** lerd asks at install, or turn it on
   with the Schedule switch on the plugin's card or
   `lerd plugin schedule worktree-cleanup on`. lerd has no "PR merged" event, so
@@ -54,16 +59,21 @@ Usage, every setting and the required tools: [DOCS.md](DOCS.md).
 
 ## What it sends
 
-- GitHub, through the `gh` CLI you are logged into: for each site's `origin`
-  repository, its pull requests (head branch, state, number), and a search by
-  commit SHA for a detached HEAD. Nothing else leaves the machine.
+- GitHub, through the `gh` CLI you are logged into: one GraphQL query per
+  site's `origin` repository, asking for the latest PR of each worktree's
+  branch and the PRs containing each worktree's HEAD commit (state, number).
+- GitHub again, only when you open the Tools tab or run
+  `worktree-cleanup:config check`: your login (`gh api user`) and how many
+  GraphQL points you have left (`gh api rate_limit`), to show in the system
+  check. Nothing else leaves the machine.
 - lerd's own API: `/api/sites` and, only after a scheduled run removes
   something, a dashboard notification (`NOTIFY`).
 
 ## Requirements
 
 macOS or Linux, lerd 1.39+ (for schedules), `gh` (logged in), `git`, `jq`,
-`curl`, `lsof`.
+`curl`, `lsof`. The dashboard starts runs in the background with `setsid`
+(Linux) or `perl` (macOS ships it).
 
 ## License
 

@@ -7,8 +7,15 @@ schedule, following rules you choose.
 
 ## Where to use it
 
-- **Dashboard:** the **Worktree cleanup** page on the rail has every setting as
-  a toggle, the schedule, a tool check, **Preview** (dry run) and **Clean up now**.
+- **Dashboard:** the **Worktree cleanup** page on the rail. **Preview** (dry run)
+  and **Clean up now** run in the background and the **Run** tab shows them live:
+  sites as they are scanned, each worktree that will go (or went) and why, and
+  a progress bar while removing. Leave the page and come back: a run in
+  progress is picked up again. **History** lists past runs; click one to open
+  it. **Settings** opens with a plain-language summary of your rules and has
+  every setting as a control (changed ones are marked, with a reset).
+  **Tools** checks every required tool, your GitHub login and API budget, shows
+  how much the plugin stores, and lists saved patches to view or delete.
 - **A site's Commands menu:** **Clean up finished worktrees** for that site only.
 - **Terminal:**
 
@@ -47,7 +54,7 @@ plugin's data folder and kept across updates.
 | `DIRTY_MERGED` | remove | Merged PR with uncommitted changes: `remove` or `keep` |
 | `DIRTY_CLOSED` | remove | Closed PR with uncommitted changes: `remove` or `keep` |
 | `DIRTY_ON_BASE` | keep | Detached / no-PR on a base branch with uncommitted changes. Usually new work not yet committed, so kept by default |
-| `SAVE_PATCH` | yes | Save uncommitted changes as `patches/<site>-<worktree>-<time>.patch` before removing. Restore with `git apply <patch>` |
+| `SAVE_PATCH` | yes | Save uncommitted changes as `patches/<site>-<worktree>-<time>.patch` before removing (deleted again if the removal fails). Restore with `git apply <patch>` |
 
 ### Safety
 
@@ -87,3 +94,21 @@ logged to `cleanup.log` in the plugin's data folder, and
 access to lerd's API. `gh` is checked when the plugin runs rather than at load,
 because lerd's dashboard runs with a PATH that doesn't include Homebrew; the
 scripts add `/opt/homebrew/bin` and `/usr/local/bin` themselves.
+
+## Run history
+
+Every run (Preview, Clean up now, the CLI, the MCP tool, and scheduled runs
+that found something to remove) is kept as `runs/<time>.jsonl` in the plugin's
+data folder: one JSON event per line (`start`, `site`, `wt` with its verdict
+and reason, `removing`, `removed`/`failed`/`kept`, `done`). The last 200 are
+kept. Removals are also appended to `cleanup.log` as plain text.
+
+Only one run happens at a time; a second one started meanwhile is refused (the
+dashboard shows the run already in progress instead).
+
+## How it scans
+
+Sites are scanned in parallel. For each site, one GitHub GraphQL call fetches
+the latest PR of every worktree's branch and the PRs containing every HEAD, and
+`git fetch` runs only for the base branches, only when a worktree needs the
+base-branch check. Removals then happen one at a time.

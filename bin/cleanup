@@ -5,23 +5,28 @@
 #
 # CLI:  run [--apply] [--quiet] [site...]    dry run unless --apply
 # MCP:  {"apply": bool, "sites": [..]}
-# ponytail: PR lookup = one gh call per repo + one per branchless HEAD; fine for
-# tens of worktrees, batch via GraphQL if it ever gets slow.
+#
+# Every run writes its events to runs/<id>.jsonl in the data folder; the
+# dashboard page polls that file while the run works and keeps it as history.
+# Sites are scanned in parallel (one GitHub GraphQL call per site), then the
+# finished worktrees are removed one at a time.
 set -u
 set -f   # no globbing of site names
 . "$LERD_PLUGIN_DIR/lib/settings.sh"
 command -v gh >/dev/null || { echo "worktree-cleanup needs the GitHub CLI: brew install gh && gh auth login" >&2; exit 1; }
 
+DATA="${LERD_PLUGIN_DATA:?run it through lerd: lerd worktree-cleanup:run}"
+SURFACE="${LERD_SURFACE:-cli}"
 APPLY=0 QUIET=0 SITES=""
-if [ "${LERD_SURFACE:-cli}" = schedule ]; then
+if [ "$SURFACE" = schedule ]; then
   # lerd runs this every 15m; SCHEDULE_EVERY decides which of those runs act.
   # A minute of slack, since lerd checks once a minute.
-  STAMP="$LERD_PLUGIN_DATA/last-scheduled-run"
+  STAMP="$DATA/last-scheduled-run"
   last=$(cat "$STAMP" 2>/dev/null || echo 0); now=$(date +%s)
   [ $(( now - last )) -ge $(( $(to_seconds "$SCHEDULE_EVERY") - 60 )) ] || exit 0
   echo "$now" > "$STAMP"   # ponytail: stamped before the run, so a failed run waits a full interval too
   APPLY=1 QUIET=1
-elif [ "${LERD_SURFACE:-cli}" = mcp ]; then
+elif [ "$SURFACE" = mcp ]; then
   IN=$(cat)
   [ "$(printf '%s' "$IN" | jq -r '.apply // false')" = true ] && APPLY=1
   SITES=$(printf '%s' "$IN" | jq -r '(.sites // [])[]')
@@ -31,13 +36,40 @@ else
   done
 fi
 
-LOG="${LERD_PLUGIN_DATA:-/tmp}/cleanup.log"
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
-REMOVED="$TMP/removed"; : > "$REMOVED"
+# One run at a time: two overlapping runs remove (and log) the same worktree twice.
+LOCK="$DATA/run.lock"; mkdir -p "$DATA/runs"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  if kill -0 "$(cat "$LOCK/pid" 2>/dev/null || echo 0)" 2>/dev/null; then
+    [ "$SURFACE" = schedule ] && exit 0
+    echo "another cleanup is running (run $(cat "$LOCK/id" 2>/dev/null))" >&2; exit 75
+  fi
+  rm -rf "$LOCK"; mkdir "$LOCK"   # stale lock from a killed run
+fi
+RUN_ID="${RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}"
+echo $$ > "$LOCK/pid"; echo "$RUN_ID" > "$LOCK/id"
+EV="$DATA/runs/$RUN_ID.jsonl"; : > "$EV"
+# Scratch space inside the data folder: a plugin writes nowhere else.
+TMP=$(mktemp -d "$DATA/tmp.XXXXXX"); trap 'rm -rf "$TMP" "$LOCK"' EXIT; trap 'exit 130' INT TERM
+
+LOG="$DATA/cleanup.log"
+US=$(printf '\037')   # unlike a tab, read keeps empty fields
 say() { [ $QUIET = 1 ] || echo "$@"; }
+ev() { jq -cn "$@" >> "$EV"; }   # one JSON line per event; short appends don't interleave
 first_line() { printf '%s' "$1" | grep -v '^ *→' | grep -m1 . | sed 's/^ *✗ *//'; }
 api() { curl -fsS -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" "$LERD_API_URL$1"; }
-logrm() { say "  removed $1"; echo "$2" >> "$REMOVED"; echo "$(date '+%F %T') removed $2 $3" >> "$LOG"; }
+T0=$(date +%s)
+
+api /api/sites > "$TMP/sites.json" || {
+  ev --arg m "lerd API unreachable" '{e:"error", message:$m}'; echo "lerd API unreachable" >&2; exit 1; }
+
+# Sites to scan, in lerd's order.
+for site in $(jq -r '.[] | select((.worktrees // []) | length > 0) | .name' "$TMP/sites.json"); do
+  if [ -n "$SITES" ] && ! printf '%s\n' $SITES | grep -qxF -e "$site"; then continue; fi
+  printf '%s\n' $EXCLUDE_SITES | grep -qxF -e "$site" && continue
+  echo "$site"
+done > "$TMP/order"
+ev --arg id "$RUN_ID" --arg s "$SURFACE" --argjson a $APPLY --argjson at "$T0" --rawfile o "$TMP/order" \
+  '{e:"start", id:$id, surface:$s, mode:(if $a==1 then "apply" else "preview" end), at:$at, sites:($o|split("\n")|map(select(.!="")))}'
 
 # Every process cwd, once, minus lerd's own dev servers: a process descended
 # from something lerd launched (a command under lerd's bin or run folders).
@@ -48,107 +80,173 @@ lsof -a -d cwd -F pn 2>/dev/null |
     BEGIN { while ((getline l < psf) > 0) { split(l, f, " "); pp[f[1]] = f[2]; c = l; sub(/^ *[0-9]+ +[0-9]+ +/, "", c); cmd[f[1]] = c } }
     function lerds(p,  n) { for (n = 0; p > 1 && n < 50; n++) { if (index(cmd[p], lerd)) return 1; p = pp[p] } return 0 }
     /^p/ { p = substr($0, 2) } /^n/ { if (!lerds(p)) print substr($0, 2) }' | sort -u > "$TMP/cwds"
-busy() { is_yes "$SKIP_BUSY" && grep -qE "^$1(/|$)" "$TMP/cwds"; }
+# The path is compared as text, never as a pattern: a + or [ in it must not hide a process.
+busy() { is_yes "$SKIP_BUSY" && awk -v p="$1" '$0 == p || index($0, p "/") == 1 { f = 1 } END { exit !f }' "$TMP/cwds"; }
 
-api /api/sites > "$TMP/sites.json" || { echo "lerd API unreachable" >&2; exit 1; }
+# owner/name from git@github.com:o/r.git or https://github.com/o/r(.git)
+gh_repo() { printf '%s' "$1" | sed -E 's#^(ssh://)?(git@|https?://)[^/:]+[:/]##; s#\.git$##'; }
 
-# ponytail: positional 'for' over a jq list; site names never contain spaces.
-for site in $(jq -r '.[] | select((.worktrees // []) | length > 0) | .name' "$TMP/sites.json"); do
-  if [ -n "$SITES" ] && ! printf '%s\n' $SITES | grep -qx "$site"; then continue; fi
-  printf '%s\n' $EXCLUDE_SITES | grep -qx "$site" && continue
-  jq -c --arg s "$site" '.[] | select(.name==$s)' "$TMP/sites.json" > "$TMP/site.json"
-  spath=$(jq -r .path "$TMP/site.json")
+# Phase 1, per site (runs in the background, one per site): decide every
+# worktree. Planned removals go to $TMP/plan.<site>, text to $TMP/txt.<site>.
+scan_site() {
+  site=$1; plan="$TMP/plan.$site"; txt="$TMP/txt.$site"; : > "$plan"; : > "$txt"
+  sj="$TMP/site.$site.json"
+  jq -c --arg s "$site" '.[] | select(.name==$s)' "$TMP/sites.json" > "$sj"
+  spath=$(jq -r .path "$sj"); pdb=$(jq -r '.db_database // ""' "$sj")
   remote=$(git -C "$spath" remote get-url origin 2>/dev/null || true)
-  git -C "$spath" fetch --quiet origin 2>/dev/null || true
-  bases=$(for b in $BASE_BRANCHES; do
-    git -C "$spath" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null && echo "origin/$b"; done)
-  prs='[]'; [ -n "$remote" ] && prs=$(gh -R "$remote" pr list --state all --limit 1000 --json headRefName,state,number 2>/dev/null || echo '[]')
-  pdb=$(jq -r '.db_database // ""' "$TMP/site.json")
-  say "== $site"
+  echo "== $site" >> "$txt"
+  wts="$TMP/wts.$site"
+  jq -r '.worktrees | to_entries[] | .value as $w | [(.key|tostring), $w.path, ($w.git_branch // ""), ($w.idle|tostring), ($w.db_isolated // false|tostring), ($w.db_database // "")] | join("\u001f")' "$sj" > "$wts"
+  ev --arg s "$site" --argjson n "$(wc -l < "$wts" | tr -d ' ')" '{e:"site", site:$s, worktrees:$n}'
 
-  # \037 separator: unlike a tab, read keeps empty fields (no branch, no db).
-  US=$(printf '\037')
-  jq -r '.worktrees[] | [.path, (.git_branch // ""), (.idle|tostring), (.db_isolated // false|tostring), (.db_database // "")] | join("\u001f")' "$TMP/site.json" > "$TMP/wts"
-  while IFS="$US" read -r wpath gbr idle isolated wdb; do
-    name=$(basename "$wpath")
-    [ -d "$wpath" ] || { say "  skip   $name (folder missing)"; continue; }
+  # Every worktree's HEAD, then one GraphQL call for all their PRs: the latest
+  # PR per branch, and the PRs containing each HEAD (for detached ones).
+  : > "$TMP/heads.$site"
+  while IFS="$US" read -r i wpath gbr _; do
+    printf '%s\t%s\t%s\n' "$i" "$gbr" "$(git -C "$wpath" rev-parse HEAD 2>/dev/null)" >> "$TMP/heads.$site"
+  done < "$wts"
+  prs="$TMP/prs.$site"; echo '{}' > "$prs"
+  if [ -n "$remote" ]; then
+    repo=$(gh_repo "$remote")
+    q=$(jq -Rrn --arg o "${repo%%/*}" --arg n "${repo#*/}" '
+      [inputs | split("\t") | {i:.[0], b:.[1], h:.[2]}] |
+      "query{repository(owner:\($o|@json),name:\($n|@json)){" +
+      (map((if .b != "" then "b\(.i):pullRequests(headRefName:\(.b|@json),first:1,orderBy:{field:CREATED_AT,direction:DESC}){nodes{state number}} " else "" end) +
+           (if (.h|test("^[0-9a-f]{40}$")) then "c\(.i):object(oid:\(.h|@json)){...on Commit{associatedPullRequests(first:10){nodes{state number}}}} " else "" end)) | join("")) +
+      "}}"' < "$TMP/heads.$site")
+    # A HEAD never pushed answers null, not an error. On an error gh still
+    # prints whatever data came back, so the PR rules use what they can.
+    out=$(gh api graphql -f query="$q" 2>"$TMP/gherr.$site") ||
+      ev --arg s "$site" --arg m "$(first_line "$(cat "$TMP/gherr.$site")")" '{e:"warn", site:$s, message:("GitHub: " + $m)}'
+    printf '%s' "$out" | jq -c '.data.repository // {}' > "$prs" 2>/dev/null || echo '{}' > "$prs"
+  fi
+  fetched=""
+
+  while IFS="$US" read -r i wpath gbr idle isolated wdb; do
+    name=$(basename "$wpath"); label=${gbr:-detached}
+    head=$(awk -F'\t' -v i="$i" '$1==i {print $3}' "$TMP/heads.$site")
+    row() { # verdict reason [note]
+      printf '  %-6s %s (%s)%s\n' "$1" "$name" "$2" "${3:-}" >> "$txt"
+      ev --arg s "$site" --arg n "$name" --arg b "$label" --arg p "$wpath" --arg v "$1" --arg r "$2" --arg t "${3:-}" \
+        '{e:"wt", site:$s, name:$n, branch:$b, path:$p, verdict:$v, reason:$r, note:($t|ltrimstr(" + ")|ltrimstr(", "))}'
+    }
+    [ -d "$wpath" ] || { row skip "folder missing"; continue; }
 
     # 1. Why it may go: kind = merged | closed | base (empty = keep).
     why="" kind=""
-    if [ -n "$gbr" ]; then
-      st=$(printf '%s' "$prs" | jq -r --arg b "$gbr" '[.[]|select(.headRefName==$b)]|sort_by(.number)|last|if .==null then "" else "\(.state) #\(.number)" end')
-      case "$st" in MERGED*) why="$st" kind=merged ;; CLOSED*) why="$st" kind=closed ;; esac
+    st=$(jq -r --arg k "b$i" '.[$k].nodes[0] // empty | "\(.state) #\(.number)"' "$prs")
+    case "$st" in MERGED*) why="$st" kind=merged ;; CLOSED*) why="$st" kind=closed ;; esac
+    if [ -z "$kind" ] && is_yes "$REMOVE_ON_BASE" && [ -n "$head" ]; then
+      # A fresh worktree with no commits yet is "on main" too: require age.
+      hf=$(git -C "$wpath" rev-parse --git-path HEAD 2>/dev/null); case "$hf" in /*) ;; *) hf="$wpath/$hf" ;; esac
+      if [ -n "$(find "$hf" -mmin +$(( MIN_AGE_HOURS * 60 )) 2>/dev/null)" ]; then
+        if [ -z "$fetched" ]; then
+          # Only the base branches, and only once per site, only when a worktree needs it.
+          fetched=$(for b in $BASE_BRANCHES; do git -C "$spath" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null && echo "$b"; done)
+          # shellcheck disable=SC2086
+          [ -n "$fetched" ] && git -C "$spath" fetch --quiet origin $fetched 2>/dev/null
+          fetched="${fetched:- }"
+        fi
+        for b in $fetched; do
+          git -C "$wpath" merge-base --is-ancestor "$head" "origin/$b" 2>/dev/null && { why="HEAD on origin/$b"; kind=base; break; }
+        done
+      fi
     fi
     if [ -z "$kind" ]; then
-      head=$(git -C "$wpath" rev-parse HEAD 2>/dev/null || true)
-      if is_yes "$REMOVE_ON_BASE"; then
-        # A fresh worktree with no commits yet is "on main" too: require age.
-        hf=$(git -C "$wpath" rev-parse --git-path HEAD 2>/dev/null); case "$hf" in /*) ;; *) hf="$wpath/$hf" ;; esac
-        if [ -n "$(find "$hf" -mmin +$(( MIN_AGE_HOURS * 60 )) 2>/dev/null)" ]; then
-          for b in $bases; do
-            git -C "$wpath" merge-base --is-ancestor "$head" "$b" 2>/dev/null && { why="HEAD on $b"; kind=base; break; }
-          done
-        fi
-      fi
-      if [ -z "$kind" ] && [ -n "$head" ] && [ -n "$remote" ]; then
-        pr=$(gh -R "$remote" pr list --state all --search "$head" --json state,number 2>/dev/null |
-          jq -r '[.[]|select(.state!="OPEN")]|first|if .==null then "" else "\(.state) #\(.number)" end')
-        case "$pr" in MERGED*) why="HEAD in $pr" kind=merged ;; CLOSED*) why="HEAD in $pr" kind=closed ;; esac
-      fi
+      pr=$(jq -r --arg k "c$i" '[.[$k].associatedPullRequests.nodes[]? | select(.state != "OPEN")] | first // empty | "\(.state) #\(.number)"' "$prs")
+      case "$pr" in MERGED*) why="HEAD in $pr" kind=merged ;; CLOSED*) why="HEAD in $pr" kind=closed ;; esac
     fi
-    label=${gbr:-detached}
-    [ -n "$kind" ] || { say "  keep   $name ($label: not finished)"; continue; }
+    if [ -z "$kind" ]; then
+      open=$(jq -r --arg k "b$i" '.[$k].nodes[0] // empty | select(.state=="OPEN") | "PR #\(.number) open"' "$prs")
+      row keep "${open:-not finished}"; continue
+    fi
     case "$kind" in
-      merged) is_yes "$REMOVE_MERGED" || { say "  keep   $name ($why, REMOVE_MERGED=no)"; continue; } ;;
-      closed) is_yes "$REMOVE_CLOSED" || { say "  keep   $name ($why, REMOVE_CLOSED=no)"; continue; } ;;
+      merged) is_yes "$REMOVE_MERGED" || { row keep "$why, REMOVE_MERGED=no"; continue; } ;;
+      closed) is_yes "$REMOVE_CLOSED" || { row keep "$why, REMOVE_CLOSED=no"; continue; } ;;
     esac
 
     # 2. Guards.
-    busy "$wpath" && { say "  keep   $name ($why, a process is using it)"; continue; }
-    is_yes "$REQUIRE_IDLE" && [ "$idle" != true ] && { say "  keep   $name ($why, lerd saw recent activity)"; continue; }
+    busy "$wpath" && { row keep "$why, a process is using it"; continue; }
+    is_yes "$REQUIRE_IDLE" && [ "$idle" != true ] && { row keep "$why, lerd saw recent activity"; continue; }
     force=""
     if [ -n "$(git -C "$wpath" status --porcelain 2>/dev/null)" ]; then
       case "$kind" in merged) act=$DIRTY_MERGED k=DIRTY_MERGED ;; closed) act=$DIRTY_CLOSED k=DIRTY_CLOSED ;; *) act=$DIRTY_ON_BASE k=DIRTY_ON_BASE ;; esac
-      [ "$act" = remove ] || { say "  keep   $name ($why, uncommitted changes, $k=keep)"; continue; }
+      [ "$act" = remove ] || { row keep "$why, uncommitted changes, $k=keep"; continue; }
       force=1
     fi
 
-    # 3. Remove.
+    # 3. Plan the removal.
     dropdb="" note=""
     # db:share drops only the database lerd made for the worktree, so a flag
     # left on a worktree using the parent's database just gets cleared.
     if [ "$isolated" = true ] && is_yes "$DROP_DATABASE"; then
-      dropdb=1; [ -n "$wdb" ] && [ "$wdb" != "$pdb" ] && note=" + drop db $wdb" || note=" + clear db isolation"
+      # drop: a database of its own. clear: only the flag, it uses the site's database.
+      if [ -n "$wdb" ] && [ "$wdb" != "$pdb" ]; then dropdb=drop note=" + drop db $wdb"; else dropdb=clear note=" + clear db isolation"; fi
     fi
     [ -n "$force" ] && { is_yes "$SAVE_PATCH" && note="$note, uncommitted changes saved as patch" || note="$note, uncommitted changes discarded"; }
-    if [ $APPLY = 0 ]; then say "  remove $name ($why)$note"; continue; fi
+    row remove "$why" "$note"
+    printf '%s\n' "$name$US$wpath$US$spath$US$why$US$note$US$force$US$dropdb$US$wdb" >> "$plan"
+  done < "$wts"
+  ev --arg s "$site" '{e:"site_done", site:$s}'
+}
+
+while read -r site; do scan_site "$site" </dev/null & done < "$TMP/order"
+wait
+
+# Phase 2: remove, one at a time (lerd worktree remove takes lerd's site lock anyway).
+n=0 failed=0
+while read -r site; do
+  [ $QUIET = 1 ] || cat "$TMP/txt.$site"
+  [ $APPLY = 1 ] || continue
+  while IFS="$US" read -r name wpath spath why note force dropdb wdb; do
+    ev --arg s "$site" --arg n "$name" '{e:"removing", site:$s, name:$n}'
+    res() { # event reason
+      ev --arg s "$site" --arg n "$name" --arg e "$1" --arg r "$2" '{e:$e, site:$s, name:$n, reason:$r}'
+    }
+    # Database first: when lerd refuses to drop a database of its own, the
+    # worktree stays and no patch is written. A worktree that only carries the
+    # flag (it uses the site's database) has nothing to lose, so a refusal there
+    # doesn't stop the removal. The patch comes last, and goes again if the
+    # removal fails, so a worktree that keeps failing doesn't pile up patches.
+    if [ -n "$dropdb" ] && ! err=$(cd "$wpath" && "$LERD_BIN" db:share </dev/null 2>&1); then
+      if [ "$dropdb" = drop ]; then
+        m="db $wdb not dropped: $(first_line "$err")"; say "  keep   $name ($why, $m)"; res kept "$m"; continue
+      fi
+      note=$(printf '%s' "$note" | sed 's/ + clear db isolation/ + db isolation not cleared (shares the site database)/')
+    fi
+    patch=""
     if [ -n "$force" ] && is_yes "$SAVE_PATCH"; then
-      pdir="${LERD_PLUGIN_DATA:-/tmp}/patches"; mkdir -p "$pdir"
+      pdir="$DATA/patches"; mkdir -p "$pdir"
       patch="$pdir/$site-$name-$(date +%Y%m%d-%H%M%S).patch"
       git -C "$wpath" add -A -N 2>/dev/null   # include untracked files in the diff
-      git -C "$wpath" diff HEAD --binary > "$patch" || { say "  keep   $name (could not save patch)"; continue; }
+      git -C "$wpath" diff HEAD --binary > "$patch" || { rm -f "$patch"; say "  keep   $name (could not save patch)"; res kept "could not save patch"; continue; }
     fi
-    if [ -n "$dropdb" ] && ! err=$(cd "$wpath" && "$LERD_BIN" db:share </dev/null 2>&1); then
-      say "  keep   $name ($why, db $wdb not dropped: $(first_line "$err"))"; continue
-    fi
-    if err=$(cd "$spath" && "$LERD_BIN" worktree remove ${force:+--force} "$wpath" </dev/null 2>&1); then
-      logrm "$name ($why)$note" "$site/$name" "($why)$note"
-    elif ! git -C "$spath" worktree list --porcelain | grep -qx "worktree $wpath"; then
-      # git unregistered it but couldn't delete the folder (a dev server was
-      # still writing). Its changes are committed or saved, so finish the job.
-      rm -rf "$wpath"; git -C "$spath" worktree prune
-      logrm "$name ($why)$note" "$site/$name" "($why)$note"
+    if err=$(cd "$spath" && "$LERD_BIN" worktree remove ${force:+--force} "$wpath" </dev/null 2>&1) ||
+       ! git -C "$spath" worktree list --porcelain | grep -qxF -e "worktree $wpath"; then
+      # On failure git may still have unregistered it but not deleted the folder
+      # (a dev server was still writing). Its changes are committed or saved, so finish the job.
+      # Never the site itself or anything outside it: only a folder below the site's own.
+      case "$wpath" in "$spath"/?*|"$(dirname "$spath")"/?*) [ "$wpath" != "$spath" ] && [ -d "$wpath" ] && { rm -rf "$wpath"; git -C "$spath" worktree prune; } ;; esac
+      say "  removed $name ($why)$note"; res removed "$why$note"
+      echo "$(date '+%F %T') removed $site/$name ($why)$note" >> "$LOG"
+      echo "$site/$name" >> "$TMP/removed"
     else
-      say "  FAILED $name: $(first_line "$err")"
+      [ -n "$patch" ] && rm -f "$patch"   # the worktree, and its changes, are still there
+      m=$(first_line "$err"); say "  FAILED $name: $m"; res failed "$m"; echo x >> "$TMP/failed"
     fi
-  done < "$TMP/wts"
-done
+  done < "$TMP/plan.$site"
+done < "$TMP/order"
 
-n=$(wc -l < "$REMOVED" | tr -d ' ')
+n=$(cat "$TMP/removed" 2>/dev/null | wc -l | tr -d ' ')
+failed=$(cat "$TMP/failed" 2>/dev/null | wc -l | tr -d ' ')
+planned=$(while read -r s; do cat "$TMP/plan.$s"; done < "$TMP/order" | wc -l | tr -d ' ')
+ev --argjson at "$(date +%s)" --argjson t0 "$T0" --argjson n "$n" --argjson f "$failed" --argjson p "$planned" \
+  '{e:"done", at:$at, seconds:($at-$t0), removed:$n, failed:$f, planned:$p}'
+
 if [ $APPLY = 1 ]; then
   say "removed $n"
-  if [ "$n" -gt 0 ] && is_yes "$NOTIFY" && [ "${LERD_SURFACE:-cli}" = schedule ]; then
-    body=$(head -5 "$REMOVED" | tr '\n' ' '); [ "$n" -gt 5 ] && body="${body}…"
+  if [ "$n" -gt 0 ] && is_yes "$NOTIFY" && [ "$SURFACE" = schedule ]; then
+    body=$(head -5 "$TMP/removed" | tr '\n' ' '); [ "$n" -gt 5 ] && body="${body}…"
     jq -n --arg t "Removed $n finished worktree(s)" --arg b "$body" '{title:$t, body:($b|.[0:300]), tag:"worktree-cleanup"}' |
       curl -fsS -X POST -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" -H 'Content-Type: application/json' \
         -d @- "$LERD_API_URL/api/notifications/plugin" >/dev/null 2>&1 || true
@@ -156,3 +254,8 @@ if [ $APPLY = 1 ]; then
 else
   say "(dry run: pass --apply to remove)"
 fi
+
+# History: drop scheduled runs that found nothing to do, keep the last 200 runs.
+if [ "$SURFACE" = schedule ] && [ "$planned" = 0 ]; then rm -f "$EV"; fi
+ls -1 "$DATA/runs" | sort -r | tail -n +201 | while read -r f; do rm -f "$DATA/runs/$f"; done
+exit 0
