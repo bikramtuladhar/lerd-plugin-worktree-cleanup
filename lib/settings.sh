@@ -36,5 +36,6 @@ to_seconds() {
   esac
 }
 
-# The dashboard runs plugins with a bare PATH; gh lives in Homebrew.
-PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+# Dashboard and scheduled runs may have a minimal PATH. Preserve its priority,
+# then include common user and Homebrew locations for gh.
+PATH="$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"
