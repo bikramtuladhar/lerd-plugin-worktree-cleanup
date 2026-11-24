@@ -38,20 +38,39 @@ Usage, every setting and the required tools: [DOCS.md](DOCS.md). What changed in
 
 - lerd's `/api/sites` (sites, their worktrees, branch, idle state and whether
   a worktree has its own database).
-- Each site's git repository: `git fetch origin`, worktree status, whether HEAD
-  is on a base branch.
+- Each site's git repository: `git fetch origin` of the base branches,
+  worktree status, whether HEAD is on a base branch.
+- Your global git `core.sshCommand` setting and the `GIT_SSH_COMMAND`
+  variable, only to check whether you set your own SSH command (see What it
+  sends).
 - The working folder of running processes (`ps`, `lsof`), to skip worktrees in use.
 - `lerd plugin schedule worktree-cleanup`, to show on the Settings tab whether
   the schedule is allowed and when it last ran.
+- The folders it searches for `gh`: whatever `PATH` lerd passes, then
+  `~/.local/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`,
+  `/home/linuxbrew/.linuxbrew/bin`, `~/.linuxbrew/bin` and `/snap/bin`.
 
 ## What it changes
 
 - Removes finished worktrees with `lerd worktree remove` (and `--force` only
   when your rules say to remove one with uncommitted changes).
 - Drops a worktree's own database with `lerd db:share` before removing it.
-- Writes only to its data folder: `config.env`, `cleanup.log`, `runs/` (the
-  last 200 runs, as JSON lines), `patches/`, `last-scheduled-run`, `run.lock`
-  (lerd writes `schedule.log` there too).
+- `git fetch origin` updates the site's `origin` remote-tracking refs of the
+  base branches (`refs/remotes/origin/main` and so on). Local branches and
+  working trees are not touched.
+- Before saving a patch of a worktree with uncommitted changes, runs
+  `git add --intent-to-add --all` in that worktree so untracked files are in
+  the patch. Only the worktree about to be removed.
+- If `lerd worktree remove` fails after git has already unregistered the
+  worktree (a dev server was still writing to it), deletes the worktree's
+  folder itself and runs `git worktree prune` in the site. Only a folder below
+  the site's own folder or next to it, never the site itself; its changes were
+  committed or saved as a patch first.
+- Writes only to its data folder: `config.env` (and `config.env.tmp` while
+  saving it), `cleanup.log`, `runs/` (the last 200 runs, as JSON lines),
+  `patches/`, `last-scheduled-run`, `run.lock`, `last-run.err` (errors from
+  starting a dashboard run), and a temporary `tmp.XXXXXX` folder per run,
+  deleted when the run ends (lerd writes `schedule.log` there too).
 - **Schedule (off until you allow it):** lerd asks at install, or turn it on
   with the Schedule switch on the plugin's card or
   `lerd plugin schedule worktree-cleanup on`. lerd has no "PR merged" event, so
@@ -65,7 +84,14 @@ Usage, every setting and the required tools: [DOCS.md](DOCS.md). What changed in
 - GitHub again, only when you open the Tools tab or run
   `worktree-cleanup:config check`: your login (`gh api user`) and how many
   GraphQL points you have left (`gh api rate_limit`), to show in the system
-  check. Nothing else leaves the machine.
+  check.
+- Each site's `origin` remote, through `git fetch` of the base branches. That
+  can be any git host, not only GitHub, over whatever protocol the remote uses.
+  Over SSH it runs with `BatchMode=yes`, `ConnectTimeout=15`,
+  `ServerAliveInterval=10` and `ServerAliveCountMax=3`, so it never prompts and
+  gives up on a stalled connection, unless you set your own
+  `core.sshCommand` or `GIT_SSH_COMMAND`, which are then used as they are.
+  Nothing else leaves the machine.
 - lerd's own API: `/api/sites` and, only after a scheduled run removes
   something, a dashboard notification (`NOTIFY`).
 
