@@ -1,7 +1,7 @@
 api_version: 1
 name: worktree-cleanup
 lerd: ">=1.39"
-version: 0.5.0
+version: 0.5.1
 description: Remove finished worktrees (with their database and dev server) by hand or on a schedule, with rules you choose
 docs: DOCS.md
 icon: ui/icon.svg

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1
+
+- **Scheduled runs no longer hang.** `git fetch` and the GitHub query now give
+  up after 90 seconds, never prompt for credentials, and drop a stalled SSH
+  connection. Before this, a run that started while the Mac was half asleep
+  (DarkWake) or offline waited on `git fetch` until lerd killed it at 10
+  minutes. A fetch that fails now shows as a warning on that site, and the
+  base-branch check falls back to the refs from the last fetch.
+
 ## 0.5.0
 
 A rebuilt dashboard that shows each run live, keeps a history of runs, and

@@ -56,8 +56,32 @@ US=$(printf '\037')   # unlike a tab, read keeps empty fields
 say() { [ $QUIET = 1 ] || echo "$@"; }
 ev() { jq -cn "$@" >> "$EV"; }   # one JSON line per event; short appends don't interleave
 first_line() { printf '%s' "$1" | grep -v '^ *→' | grep -m1 . | sed 's/^ *✗ *//'; }
-api() { curl -fsS -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" "$LERD_API_URL$1"; }
+api() { curl -fsS --max-time 30 -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" "$LERD_API_URL$1"; }
 T0=$(date +%s)
+
+# Network calls get a wall-clock limit: a scheduled run can land in a DarkWake
+# or on a dead network, where git fetch and gh wait forever and lerd kills the
+# whole run at 10m. No coreutils timeout on macOS, so a watcher does it.
+# The watcher's fds go to /dev/null so a leftover sleep never holds lerd's pipe.
+with_timeout() { # seconds cmd...
+  wt_s=$1; shift
+  # In its own process group, so git's ssh child goes too: setsid where it
+  # exists (Linux), else job control (macOS sh). Failing both, just the command.
+  if command -v setsid >/dev/null 2>&1; then setsid "$@" & wt_c=$!
+  else set -m; "$@" & wt_c=$!; set +m; fi
+  ( sleep "$wt_s"; kill -TERM -$wt_c 2>/dev/null || kill -TERM $wt_c 2>/dev/null
+    sleep 3; kill -KILL -$wt_c 2>/dev/null || kill -KILL $wt_c 2>/dev/null ) </dev/null >/dev/null 2>&1 &
+  wt_w=$!
+  wait $wt_c; wt_rc=$?
+  kill $wt_w 2>/dev/null; wait $wt_w 2>/dev/null
+  return $wt_rc
+}
+# Never prompt (no terminal to answer), and give up on a stalled connection.
+export GIT_TERMINAL_PROMPT=0
+if [ -z "${GIT_SSH_COMMAND:-}" ] && [ -z "$(git config --global core.sshCommand 2>/dev/null)" ]; then
+  export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
+fi
+NET_TIMEOUT=90
 
 api /api/sites > "$TMP/sites.json" || {
   ev --arg m "lerd API unreachable" '{e:"error", message:$m}'; echo "lerd API unreachable" >&2; exit 1; }
@@ -116,7 +140,7 @@ scan_site() {
       "}}"' < "$TMP/heads.$site")
     # A HEAD never pushed answers null, not an error. On an error gh still
     # prints whatever data came back, so the PR rules use what they can.
-    out=$(gh api graphql -f query="$q" 2>"$TMP/gherr.$site") ||
+    out=$(with_timeout $NET_TIMEOUT gh api graphql -f query="$q" 2>"$TMP/gherr.$site") ||
       ev --arg s "$site" --arg m "$(first_line "$(cat "$TMP/gherr.$site")")" '{e:"warn", site:$s, message:("GitHub: " + $m)}'
     printf '%s' "$out" | jq -c '.data.repository // {}' > "$prs" 2>/dev/null || echo '{}' > "$prs"
   fi
@@ -144,7 +168,12 @@ scan_site() {
           # Only the base branches, and only once per site, only when a worktree needs it.
           fetched=$(for b in $BASE_BRANCHES; do git -C "$spath" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null && echo "$b"; done)
           # shellcheck disable=SC2086
-          [ -n "$fetched" ] && git -C "$spath" fetch --quiet origin $fetched 2>/dev/null
+          # A fetch that fails or times out leaves the old origin refs: those
+          # can only miss a landed HEAD, never take an unlanded one for landed.
+          if [ -n "$fetched" ] && ! with_timeout $NET_TIMEOUT git -C "$spath" -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 \
+               fetch --quiet origin $fetched </dev/null 2>/dev/null; then
+            ev --arg s "$site" '{e:"warn", site:$s, message:"git fetch failed or timed out; base-branch check used the last fetched refs"}'
+          fi
           fetched="${fetched:- }"
         fi
         for b in $fetched; do
@@ -248,7 +277,7 @@ if [ $APPLY = 1 ]; then
   if [ "$n" -gt 0 ] && is_yes "$NOTIFY" && [ "$SURFACE" = schedule ]; then
     body=$(head -5 "$TMP/removed" | tr '\n' ' '); [ "$n" -gt 5 ] && body="${body}…"
     jq -n --arg t "Removed $n finished worktree(s)" --arg b "$body" '{title:$t, body:($b|.[0:300]), tag:"worktree-cleanup"}' |
-      curl -fsS -X POST -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" -H 'Content-Type: application/json' \
+      curl -fsS --max-time 30 -X POST -H "X-Lerd-Plugin-Token: $LERD_API_TOKEN" -H 'Content-Type: application/json' \
         -d @- "$LERD_API_URL/api/notifications/plugin" >/dev/null 2>&1 || true
   fi
 else

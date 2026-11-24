@@ -111,4 +111,6 @@ dashboard shows the run already in progress instead).
 Sites are scanned in parallel. For each site, one GitHub GraphQL call fetches
 the latest PR of every worktree's branch and the PRs containing every HEAD, and
 `git fetch` runs only for the base branches, only when a worktree needs the
-base-branch check. Removals then happen one at a time.
+base-branch check. Network calls give up after 90 seconds and never prompt;
+a failed fetch is reported as a warning and the last fetched refs are used.
+Removals then happen one at a time.
