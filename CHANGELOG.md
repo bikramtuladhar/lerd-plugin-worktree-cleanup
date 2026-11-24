@@ -2,6 +2,15 @@
 
 ## 0.5.1
 
+- **Finds `gh` on Linux.** Scheduled and dashboard runs failed with "needs the
+  GitHub CLI" when `gh` was installed in `~/.local/bin`, because lerd runs
+  plugins with a bare PATH and the scripts only added Homebrew's folders. They
+  now also look in `~/.local/bin`, `~/bin`, Linuxbrew and `/snap/bin`
+  (#2, #3; thanks @SHJordan for the report and the fix in #4).
+- **Clearer when `gh` is missing.** The error names the PATH it searched and
+  gives an install hint for your OS instead of always `brew install`.
+  `config check` warns when `gh` is found only on your shell's PATH, in a
+  folder background runs won't search, so the check and real runs agree.
 - **Scheduled runs no longer hang.** `git fetch` and the GitHub query now give
   up after 90 seconds, never prompt for credentials, and drop a stalled SSH
   connection. Before this, a run that started while the Mac was half asleep
