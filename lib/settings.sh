@@ -36,6 +36,23 @@ to_seconds() {
   esac
 }
 
-# Dashboard and scheduled runs may have a minimal PATH. Preserve its priority,
-# then include common user and Homebrew locations for gh.
-PATH="$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"
+# lerd's dashboard and schedules run plugins with a bare PATH (often just
+# /usr/bin:/bin), so tools installed per user or by Homebrew/Linuxbrew/snap are
+# not on it. Append the usual places; whatever PATH lerd passed still wins.
+EXTRA_PATH_DIRS="${HOME:-}/.local/bin ${HOME:-}/bin /opt/homebrew/bin /usr/local/bin /home/linuxbrew/.linuxbrew/bin ${HOME:-}/.linuxbrew/bin /snap/bin"
+for _d in $EXTRA_PATH_DIRS; do
+  case ":$PATH:" in *":$_d:"*) ;; *) PATH="$PATH:$_d" ;; esac
+done
+export PATH
+
+# How to install a missing tool on this OS.
+install_hint() { # tool
+  if [ "$(uname -s)" = Darwin ]; then
+    case "$1" in gh|jq) echo "brew install $1" ;; *) echo "xcode-select --install" ;; esac
+  else
+    case "$1" in
+      gh) echo "install gh (https://cli.github.com) into ~/.local/bin, /usr/local/bin or /usr/bin" ;;
+      *) echo "install $1 with your package manager (apt, dnf, pacman...)" ;;
+    esac
+  fi
+}

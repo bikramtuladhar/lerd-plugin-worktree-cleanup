@@ -84,7 +84,7 @@ logged to `cleanup.log` in the plugin's data folder, and
 
 | Tool | Why | Install |
 |---|---|---|
-| `gh` | PR state per branch and per commit; must be logged in (`gh auth login`) with access to the repos | [GitHub CLI installation](https://cli.github.com/) |
+| `gh` | PR state per branch and per commit; must be logged in (`gh auth login`) with access to the repos | `brew install gh`, or on Linux [cli.github.com](https://cli.github.com) |
 | `git` | worktree state, base-branch checks, patches | Xcode command line tools |
 | `jq` | reading lerd's API | ships with macOS 15+, or `brew install jq` |
 | `curl` | lerd's API and notifications | ships with macOS |
@@ -92,9 +92,13 @@ logged to `cleanup.log` in the plugin's data folder, and
 
 `config check` (or the dashboard page) verifies all of them, plus `gh` login and
 access to lerd's API. `gh` is checked when the plugin runs rather than at load,
-because background processes may have a minimal PATH; the scripts append
-`~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`. Other installation
-locations must be on the PATH of the process running the plugin.
+because lerd's dashboard and schedules run plugins with a bare PATH (often just
+`/usr/bin:/bin`). The scripts append the usual install places themselves:
+`~/.local/bin`, `~/bin`, `/opt/homebrew/bin`, `/usr/local/bin`,
+`/home/linuxbrew/.linuxbrew/bin`, `~/.linuxbrew/bin` and `/snap/bin`. If
+`gh` lives anywhere else, `config check` warns that background runs may not
+find it; link it into one of those, e.g.
+`mkdir -p ~/.local/bin && ln -s "$(command -v gh)" ~/.local/bin/gh`.
 
 ## Run history
 
