@@ -13,7 +13,7 @@
 set -u
 set -f   # no globbing of site names
 . "$LERD_PLUGIN_DIR/lib/settings.sh"
-command -v gh >/dev/null || { echo "worktree-cleanup needs the GitHub CLI: brew install gh && gh auth login" >&2; exit 1; }
+command -v gh >/dev/null || { echo "worktree-cleanup needs the GitHub CLI on PATH; install gh (https://cli.github.com/) and run gh auth login" >&2; exit 1; }
 
 DATA="${LERD_PLUGIN_DATA:?run it through lerd: lerd worktree-cleanup:run}"
 SURFACE="${LERD_SURFACE:-cli}"
